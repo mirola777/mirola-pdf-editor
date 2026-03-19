@@ -251,37 +251,56 @@ function parsePdfFont(fontName) {
   return { fontFamily, fontWeight, fontStyle };
 }
 
-export function addPdfTextLayer(fabricCanvas, textItems) {
-  textItems.forEach(item => {
-    if (item.fontSize < 4) return;
+// Create a single editable text object when user clicks on a PDF text item.
+// Uses backgroundColor to cover the original rendered PDF text underneath.
+export function createEditableText(fabricCanvas, item) {
+  const { fontFamily, fontWeight, fontStyle } = parsePdfFont(item.fontName);
 
-    const { fontFamily, fontWeight, fontStyle } = parsePdfFont(item.fontName);
-
-    // Opaque text that sits on top of the PDF rendering.
-    // Matches original appearance so the user sees editable text.
-    const textObj = new IText(item.text, {
-      left: item.x,
-      top: item.y - item.fontSize * 0.82,
-      fontSize: item.fontSize,
-      fontFamily,
-      fontWeight,
-      fontStyle,
-      fill: '#000000',
-      editable: true,
-      selectable: true,
-      hoverCursor: 'text',
-      padding: 1,
-      borderColor: '#3b82f6',
-      cornerColor: '#3b82f6',
-      cornerSize: 6,
-      transparentCorners: false,
-      customType: 'pdf-text',
-    });
-
-    fabricCanvas.add(textObj);
+  const textObj = new IText(item.text, {
+    left: item.x,
+    top: item.y - item.fontSize * 0.82,
+    fontSize: item.fontSize,
+    fontFamily,
+    fontWeight,
+    fontStyle,
+    fill: '#000000',
+    backgroundColor: '#ffffff',
+    editable: true,
+    selectable: true,
+    hoverCursor: 'text',
+    padding: 2,
+    borderColor: '#3b82f6',
+    cornerColor: '#3b82f6',
+    cornerSize: 6,
+    transparentCorners: false,
+    customType: 'pdf-text',
   });
 
+  fabricCanvas.add(textObj);
+  fabricCanvas.setActiveObject(textObj);
+  textObj.enterEditing();
   fabricCanvas.renderAll();
+  return textObj;
+}
+
+// Find text item at a given position from stored text items list
+export function findTextAtPosition(textItems, x, y) {
+  if (!textItems || !textItems.length) return null;
+
+  for (const item of textItems) {
+    if (item.fontSize < 4) continue;
+    const top = item.y - item.fontSize * 0.82;
+    const left = item.x;
+    const width = item.width || item.text.length * item.fontSize * 0.6;
+    const height = item.fontSize * 1.3;
+    const pad = 4;
+
+    if (x >= left - pad && x <= left + width + pad &&
+        y >= top - pad && y <= top + height + pad) {
+      return item;
+    }
+  }
+  return null;
 }
 
 export function deleteSelected(fabricCanvas) {

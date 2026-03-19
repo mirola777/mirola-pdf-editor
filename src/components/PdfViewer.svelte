@@ -7,7 +7,7 @@
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
     serializeCanvas, deserializeCanvas, clearCanvas,
-    addPdfTextLayer
+    createEditableText, findTextAtPosition
   } from '../lib/fabricManager.js';
 
   let store = $derived($pdfStore);
@@ -28,6 +28,7 @@
   let currentRenderedPage = 0;
   let loadedBytesId = 0;
   let renderVer = 0;
+  let pageTextItems = []; // stored PDF text positions for click-to-edit
 
   // Single unified effect: watches ALL render-relevant dependencies
   $effect(() => {
@@ -108,12 +109,24 @@
 
     setupFabricOverlay(w, h, pageInfo);
 
-    // Load text layer for click-to-edit (only if no saved state)
-    if (!pageInfo.fabricJson && actualPageNum > 0 && pdfDoc && fabricCanvas) {
+    // Load text positions for click-to-edit (don't create Fabric objects yet)
+    pageTextItems = [];
+    if (actualPageNum > 0 && pdfDoc) {
       try {
         const textItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
         if (ver !== renderVer) return;
-        addPdfTextLayer(fabricCanvas, textItems);
+        // Filter out items that already have Fabric objects (from saved state)
+        if (pageInfo.fabricJson && fabricCanvas) {
+          const existing = fabricCanvas.getObjects().filter(o => o.customType === 'pdf-text');
+          pageTextItems = textItems.filter(item => {
+            const top = item.y - item.fontSize * 0.82;
+            return !existing.some(ft =>
+              Math.abs(ft.left - item.x) < 5 && Math.abs(ft.top - top) < 5
+            );
+          });
+        } else {
+          pageTextItems = textItems;
+        }
       } catch (err) {
         console.warn('Text layer error:', err.message);
       }
@@ -222,6 +235,17 @@
     const y = e.clientY - rect.top;
 
     switch (tools.activeTool) {
+      case 'select':
+      case 'text-edit': {
+        // Click-to-edit: find PDF text at this position
+        const hit = findTextAtPosition(pageTextItems, x, y);
+        if (hit) {
+          createEditableText(fabricCanvas, hit);
+          // Remove from list so clicking again doesn't create duplicate
+          pageTextItems = pageTextItems.filter(t => t !== hit);
+        }
+        break;
+      }
       case 'text-add':
         addTextBox(fabricCanvas, { x, y, ...tools.textSettings });
         break;
