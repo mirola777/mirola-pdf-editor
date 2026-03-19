@@ -30,6 +30,22 @@
     'Georgia', 'Verdana', 'Trebuchet MS', 'Impact',
   ];
 
+  const toolHints = {
+    'select': 'Click text to edit, or select objects to move',
+    'text-edit': 'Click any text on the PDF to edit it directly',
+    'text-add': 'Click anywhere to add a new text box',
+    'highlight': 'Click to add a highlight area',
+    'draw': 'Draw freely on the page',
+    'shapes': 'Click to add a shape',
+    'image': 'Insert an image onto the page',
+    'signature': 'Add your signature',
+    'stamp': 'Click to place a stamp',
+    'note': 'Click to add a sticky note',
+    'eraser': 'Click an object to delete it',
+  };
+
+  let currentHint = $derived(toolHints[tools.activeTool] || '');
+
   function getToolIcon(icon) {
     const icons = {
       cursor: '<path d="M4 4l7 18 3-7 7-3z"/>',
@@ -194,10 +210,17 @@
     </span>
   </div>
 
+  {#if currentHint}
+    <div class="toolbar-hint">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      {currentHint}
+    </div>
+  {/if}
+
   <div class="toolbar-spacer"></div>
 
   <div class="toolbar-group">
-    <button class="btn btn-primary btn-sm" onclick={onDownload} disabled={!store.fileName}>
+    <button class="btn btn-primary btn-sm btn-download" onclick={onDownload} disabled={!store.fileName}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       {tr('download')}
     </button>
@@ -236,7 +259,32 @@
     flex-shrink: 0;
   }
 
+  .toolbar-hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    padding: 3px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 20px;
+    border: 1px solid var(--border-light);
+    animation: hintSlide 0.2s ease;
+  }
+
+  @keyframes hintSlide {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
   .toolbar-spacer { flex: 1; }
+
+  .btn-download {
+    gap: 6px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
 
   .zoom-label {
     font-size: 12px;

@@ -21,6 +21,28 @@ export function setDrawingMode(fabricCanvas, enabled, options = {}) {
   }
 }
 
+// Create a Fabric IText that represents an edited PDF text — movable, editable, styled to match
+export function addPdfEditText(fabricCanvas, options = {}) {
+  const text = new IText(options.text || '', {
+    left: options.x || 0,
+    top: options.y || 0,
+    fontSize: options.fontSize || 16,
+    fontFamily: options.fontFamily || 'Helvetica',
+    fontWeight: options.fontWeight || 'normal',
+    fontStyle: options.fontStyle || 'normal',
+    fill: options.color || '#000000',
+    editable: true,
+    padding: 0,
+    borderColor: '#3b82f6',
+    cornerColor: '#3b82f6',
+    cornerSize: 6,
+    transparentCorners: false,
+    customType: 'pdf-edit',
+  });
+  fabricCanvas.add(text);
+  return text;
+}
+
 export function addTextBox(fabricCanvas, options = {}) {
   const text = new IText(options.text || 'Type here...', {
     left: options.x || 100,
@@ -285,7 +307,7 @@ export function serializeCanvas(fabricCanvas) {
   // so we don't store the entire page image in JSON
   const bg = fabricCanvas.backgroundImage;
   fabricCanvas.backgroundImage = null;
-  const json = fabricCanvas.toJSON(['customType']);
+  const json = fabricCanvas.toJSON(['customType', 'editId']);
   json._canvasWidth = fabricCanvas.width;
   json._canvasHeight = fabricCanvas.height;
   fabricCanvas.backgroundImage = bg;

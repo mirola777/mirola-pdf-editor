@@ -144,18 +144,37 @@ function createPdfStore() {
       update(s => {
         const pageEdits = { ...s.pageEdits };
         const edits = [...(pageEdits[pageNum] || [])];
-        // Update existing edit at same position, or add new
         const existingIdx = edits.findIndex(e =>
           Math.abs(e.pdfX - edit.pdfX) < 3 && Math.abs(e.pdfY - edit.pdfY) < 3
         );
         if (existingIdx >= 0) {
-          // Preserve the very first originalText
           edits[existingIdx] = { ...edit, originalText: edits[existingIdx].originalText };
         } else {
           edits.push(edit);
         }
         pageEdits[pageNum] = edits;
         return { ...s, pageEdits, isModified: true };
+      });
+    },
+
+    updatePageEditById(pageNum, editId, updates) {
+      update(s => {
+        const pageEdits = { ...s.pageEdits };
+        const edits = [...(pageEdits[pageNum] || [])];
+        const idx = edits.findIndex(e => e.editId === editId);
+        if (idx >= 0) {
+          edits[idx] = { ...edits[idx], ...updates };
+          pageEdits[pageNum] = edits;
+        }
+        return { ...s, pageEdits };
+      });
+    },
+
+    removePageEditById(pageNum, editId) {
+      update(s => {
+        const pageEdits = { ...s.pageEdits };
+        pageEdits[pageNum] = (pageEdits[pageNum] || []).filter(e => e.editId !== editId);
+        return { ...s, pageEdits };
       });
     },
 

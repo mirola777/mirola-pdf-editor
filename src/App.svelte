@@ -11,8 +11,10 @@
   import { loadPdfDocument, renderPage, extractAllText } from './lib/pdfRenderer.js';
   import { downloadBytes, downloadText } from './lib/fileUtils.js';
   import { addImageToCanvas } from './lib/fabricManager.js';
+  import { toastStore } from './stores/toastStore.js';
 
   import Header from './components/Header.svelte';
+  import Toast from './components/Toast.svelte';
   import Footer from './components/Footer.svelte';
   import Toolbar from './components/Toolbar.svelte';
   import Sidebar from './components/Sidebar.svelte';
@@ -101,8 +103,9 @@
 
       const name = store.fileName.replace('.pdf', '_edited.pdf');
       downloadBytes(bytes, name);
+      toastStore.success('PDF downloaded successfully');
     } catch (err) {
-      alert('Error saving: ' + err.message);
+      toastStore.error('Error saving: ' + err.message);
     }
   }
 
@@ -116,8 +119,9 @@
       link.download = `page_${store.currentPage}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
+      toastStore.success('Page exported as PNG');
     } catch (err) {
-      alert('Error: ' + err.message);
+      toastStore.error('Export failed: ' + err.message);
     }
   }
 
@@ -128,14 +132,15 @@
       const pages = await extractAllText(pdfDoc);
       const text = pages.map(p => `--- Page ${p.pageNum} ---\n${p.text}`).join('\n\n');
       downloadText(text, store.fileName.replace('.pdf', '.txt'));
+      toastStore.success('Text extracted successfully');
     } catch (err) {
-      alert('Error: ' + err.message);
+      toastStore.error('Text extraction failed: ' + err.message);
     }
   }
 
   async function handleFillForms() {
     // For now, form filling is handled via the PDF viewer itself
-    alert('Form fields will be detected automatically when you open a PDF with forms. Click on form fields to fill them.');
+    toastStore.info('Click on form fields in the PDF to fill them');
   }
 
   async function handleFlattenForms() {
@@ -144,8 +149,9 @@
       const bytes = await flattenForm(store.pdfBytes);
       pdfStore.updatePdfBytes(bytes);
       pdfStore.setModified(true);
+      toastStore.success('Forms flattened successfully');
     } catch (err) {
-      alert('Error: ' + err.message);
+      toastStore.error('Flatten failed: ' + err.message);
     }
   }
 
@@ -293,6 +299,8 @@
   {#if showFindReplace}
     <FindReplace onClose={() => showFindReplace = false} />
   {/if}
+
+  <Toast />
 </div>
 
 <style>

@@ -2,9 +2,10 @@
   import { tick } from 'svelte';
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
+  import { toastStore } from '../stores/toastStore.js';
   import { loadPdfDocument, renderPage, getPageTextContent } from '../lib/pdfRenderer.js';
   import {
-    createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
+    createFabricCanvas, setDrawingMode, addTextBox, addPdfEditText, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
     serializeCanvas, deserializeCanvas, clearCanvas,
     findTextAtPosition, parsePdfFont
@@ -28,6 +29,9 @@
   let editStyle = $state({});
   let isApplying = $state(false);
 
+  // Hover hint state
+  let hoverHint = $state('');
+
   // Internal tracking (non-reactive)
   let pdfDoc = null;
   let fabricCanvas = null;
@@ -36,7 +40,7 @@
   let renderVer = 0;
   let pageTextItems = [];
 
-  // Render effect — watches store values, NOT pageEdits (edits are visual-only)
+  // Render effect
   $effect(() => {
     const bytes = store.pdfBytes;
     const page = store.currentPage;
@@ -119,10 +123,10 @@
     pageHeight = h;
     currentRenderedPage = page;
 
-    // Apply stored visual edits AFTER rendering the page
+    // Apply stored visual edits (bg cover rects only — text is on Fabric layer)
     const edits = store.pageEdits[page];
     if (edits && edits.length) {
-      paintEditsOnCanvas(canvas, edits, zoom * 1.5, h);
+      paintCoverRectsOnCanvas(canvas, edits, zoom * 1.5, h);
     }
 
     await tick();
@@ -136,7 +140,6 @@
       try {
         pageTextItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
         if (ver !== renderVer) return;
-        // Merge stored edits so re-clicking shows edited text
         mergeEditsIntoTextItems(edits, zoom * 1.5, h);
       } catch (err) {
         console.warn('Text layer error:', err.message);
@@ -144,15 +147,15 @@
     }
   }
 
-  // Sample the background color near a text position (picks the lightest nearby pixel)
+  // Sample the background color near a text position
   function sampleBgColor(ctx, x, y, fontSize, textWidth) {
     const cw = ctx.canvas.width;
     const ch = ctx.canvas.height;
     const points = [
-      [x + textWidth + 3, y - fontSize * 0.4],  // right of text
-      [x - 3, y - fontSize * 0.4],               // left of text
-      [x + 5, y - fontSize - 2],                  // above text
-      [x + 5, y + 3],                             // below text
+      [x + textWidth + 3, y - fontSize * 0.4],
+      [x - 3, y - fontSize * 0.4],
+      [x + 5, y - fontSize - 2],
+      [x + 5, y + 3],
     ];
 
     let best = { r: 255, g: 255, b: 255 };
@@ -168,14 +171,14 @@
           maxBrightness = brightness;
           best = { r: pixel[0], g: pixel[1], b: pixel[2] };
         }
-      } catch { /* cross-origin or edge, default white */ }
+      } catch { /* cross-origin or edge */ }
     }
 
     return best;
   }
 
-  // Paint stored edits directly on the PDF canvas (bg-matched rect + new text)
-  function paintEditsOnCanvas(canvas, edits, scale, canvasHeight) {
+  // Paint ONLY bg cover rects (text lives on Fabric layer as movable IText)
+  function paintCoverRectsOnCanvas(canvas, edits, scale, canvasHeight) {
     if (!edits || !edits.length) return;
     const ctx = canvas.getContext('2d');
     const pdfPageH = canvasHeight / scale;
@@ -189,24 +192,16 @@
       ctx.font = `${fontWeight} ${fontStyle} ${cFontSize}px ${fontFamily}, Helvetica, Arial, sans-serif`;
 
       const origWidth = ctx.measureText(edit.originalText).width;
-      const newWidth = edit.newText ? ctx.measureText(edit.newText).width : 0;
-      const coverWidth = Math.max(origWidth, newWidth);
+      const coverWidth = origWidth;
 
       // Sample background color to blend seamlessly
       const bg = sampleBgColor(ctx, cx, cy, cFontSize, coverWidth);
       ctx.fillStyle = `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
       ctx.fillRect(cx, cy - cFontSize * 0.82, coverWidth + 2, cFontSize);
-
-      // Draw new text
-      if (edit.newText && edit.newText.trim()) {
-        ctx.fillStyle = '#000000';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillText(edit.newText, cx, cy);
-      }
     }
   }
 
-  // Update pageTextItems to reflect stored edits (so re-clicking shows edited text)
+  // Update pageTextItems to reflect stored edits
   function mergeEditsIntoTextItems(edits, scale, canvasHeight) {
     if (!edits || !edits.length) return;
     const pdfPageH = canvasHeight / scale;
@@ -248,13 +243,47 @@
     fabricCanvas.on('selection:created', handleFabricSelection);
     fabricCanvas.on('selection:updated', handleFabricSelection);
     fabricCanvas.on('selection:cleared', () => toolStore.clearSelectedText());
-    fabricCanvas.on('object:modified', handleFabricSelection);
+    fabricCanvas.on('object:modified', handleFabricModified);
 
     if (pageInfo.fabricJson) {
       deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
+      // Re-attach event listeners to pdf-edit objects after deserialization
+      reattachEditListeners();
     }
 
     setupFabricTool();
+  }
+
+  // Re-attach move/edit listeners to deserialized pdf-edit objects
+  function reattachEditListeners() {
+    if (!fabricCanvas) return;
+    const objects = fabricCanvas.getObjects();
+    for (const obj of objects) {
+      if (obj.customType === 'pdf-edit' && obj.editId) {
+        attachEditObjectListeners(obj, obj.editId);
+      }
+    }
+  }
+
+  // Attach listeners that sync Fabric object position back to pageEdits
+  function attachEditObjectListeners(textObj, editId) {
+    textObj.on('modified', () => {
+      const scale = store.zoom * 1.5;
+      const pdfPageH = pageHeight / scale;
+      const newPdfX = textObj.left / scale;
+      const newPdfY = pdfPageH - (textObj.top + textObj.fontSize * 0.82) / scale;
+      pdfStore.updatePageEditById(store.currentPage, editId, {
+        pdfX: newPdfX,
+        pdfY: newPdfY,
+        newText: textObj.text,
+      });
+    });
+
+    textObj.on('editing:exited', () => {
+      pdfStore.updatePageEditById(store.currentPage, editId, {
+        newText: textObj.text,
+      });
+    });
   }
 
   function handleFabricSelection() {
@@ -271,6 +300,21 @@
       });
     } else {
       toolStore.clearSelectedText();
+    }
+  }
+
+  function handleFabricModified() {
+    handleFabricSelection();
+    // Also handle pdf-edit objects
+    const obj = fabricCanvas?.getActiveObject();
+    if (obj?.customType === 'pdf-edit' && obj.editId) {
+      const scale = store.zoom * 1.5;
+      const pdfPageH = pageHeight / scale;
+      pdfStore.updatePageEditById(store.currentPage, obj.editId, {
+        pdfX: obj.left / scale,
+        pdfY: pdfPageH - (obj.top + obj.fontSize * 0.82) / scale,
+        newText: obj.text,
+      });
     }
   }
 
@@ -319,13 +363,12 @@
     const { fontFamily, fontWeight, fontStyle } = parsePdfFont(hit.fontName);
     const textW = hit.width || hit.text.length * hit.fontSize * 0.55;
 
-    // Sample bg color BEFORE painting over the text
+    // Sample bg color BEFORE painting over
     let bgColor = '#ffffff';
     if (canvasEl) {
       const ctx = canvasEl.getContext('2d');
       const bg = sampleBgColor(ctx, hit.x, hit.y, hit.fontSize, textW);
       bgColor = `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
-      // Store bg color on the hit for applyTextEdit
       hit._bgR = bg.r / 255;
       hit._bgG = bg.g / 255;
       hit._bgB = bg.b / 255;
@@ -343,19 +386,43 @@
       bgColor,
     };
 
-    // Paint bg-matched rect to hide original/current text instantly
+    // Paint bg-matched rect to hide original text
     if (canvasEl) {
       const ctx = canvasEl.getContext('2d');
       ctx.fillStyle = bgColor;
-      ctx.fillRect(
-        hit.x,
-        hit.y - hit.fontSize * 0.82,
-        textW + 2,
-        hit.fontSize
-      );
+      ctx.fillRect(hit.x, hit.y - hit.fontSize * 0.82, textW + 2, hit.fontSize);
     }
 
     editingItem = hit;
+  }
+
+  // Cursor feedback: text cursor when hovering over editable text
+  function handleCanvasMouseMove(e) {
+    if (!fabricCanvasEl || editingItem || !fabricCanvas) return;
+    const tool = tools.activeTool;
+    if (tool !== 'select' && tool !== 'text-edit') {
+      hoverHint = '';
+      return;
+    }
+
+    const activeObj = fabricCanvas.getActiveObject();
+    if (activeObj) {
+      hoverHint = '';
+      return;
+    }
+
+    const rect = fabricCanvasEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const hit = findTextAtPosition(pageTextItems, x, y);
+    if (hit) {
+      fabricCanvasEl.style.cursor = 'text';
+      hoverHint = hit._edited ? 'Click to re-edit' : 'Click to edit text';
+    } else {
+      fabricCanvasEl.style.cursor = '';
+      hoverHint = '';
+    }
   }
 
   function handleCanvasClick(e) {
@@ -380,6 +447,7 @@
       }
       case 'text-add':
         addTextBox(fabricCanvas, { x, y, ...tools.textSettings });
+        toastStore.info('Text box added — double-click to edit');
         break;
       case 'highlight':
         addHighlight(fabricCanvas, x, y, 150, 20, tools.highlightColor);
@@ -410,11 +478,9 @@
   }
 
   function cancelEdit() {
-    const item = editingItem;
     editingItem = null;
     editStyle = {};
-
-    // Re-render page to restore canvas (repaint original + any stored edits)
+    hoverHint = '';
     currentRenderedPage = 0;
     handleRender(store.pdfBytes, store.currentPage, store.zoom, store.pages, canvasEl);
   }
@@ -425,7 +491,6 @@
     const newText = editorRef?.innerText?.trim() || '';
     const currentText = editingItem.text;
 
-    // If text didn't change, just close editor
     if (newText === currentText) {
       cancelEdit();
       return;
@@ -438,12 +503,12 @@
     const pdfX = editingItem.x / scale;
     const pdfY = pdfPageH - editingItem.y / scale;
     const pdfFontSize = editingItem.fontSize / scale;
-
-    // The "original text" is the text from the original PDF (before any edits)
     const originalText = editingItem._originalText || currentText;
+    const editId = Date.now() + Math.random();
 
-    // Store the edit with background color (no PDF bytes change!)
+    // Store the cover rect + text edit
     pdfStore.addPageEdit(store.currentPage, {
+      editId,
       pdfX,
       pdfY,
       pdfFontSize,
@@ -455,17 +520,38 @@
       bgB: editingItem._bgB ?? 1,
     });
 
-    // Paint the edit directly on the canvas (white rect is already there)
-    if (canvasEl) {
-      const ctx = canvasEl.getContext('2d');
+    // Create a movable Fabric IText instead of painting text on canvas
+    if (fabricCanvas) {
       const { fontFamily, fontWeight, fontStyle } = parsePdfFont(editingItem.fontName);
-      ctx.font = `${fontWeight} ${fontStyle} ${editingItem.fontSize}px ${fontFamily}, Helvetica, Arial, sans-serif`;
-      ctx.fillStyle = '#000000';
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillText(newText, editingItem.x, editingItem.y);
+
+      // Remove any existing pdf-edit object at this position
+      const existing = fabricCanvas.getObjects().find(obj =>
+        obj.customType === 'pdf-edit' &&
+        Math.abs(obj.left - editingItem.x) < 5 &&
+        Math.abs(obj.top - (editingItem.y - editingItem.fontSize * 0.82)) < 5
+      );
+      if (existing) {
+        fabricCanvas.remove(existing);
+      }
+
+      const textObj = addPdfEditText(fabricCanvas, {
+        text: newText,
+        x: editingItem.x,
+        y: editingItem.y - editingItem.fontSize * 0.82,
+        fontSize: editingItem.fontSize,
+        fontFamily,
+        fontWeight,
+        fontStyle,
+        color: '#000000',
+      });
+
+      textObj.editId = editId;
+      attachEditObjectListeners(textObj, editId);
+      fabricCanvas.setActiveObject(textObj);
+      fabricCanvas.renderAll();
     }
 
-    // Update the text item in memory so re-clicking shows the new text
+    // Update text item in memory for re-clicking
     const idx = pageTextItems.findIndex(item =>
       Math.abs(item.x - editingItem.x) < 2 && Math.abs(item.y - editingItem.y) < 2
     );
@@ -481,6 +567,9 @@
     editingItem = null;
     editStyle = {};
     isApplying = false;
+    hoverHint = '';
+
+    toastStore.success('Text updated — drag to reposition');
   }
 
   function handleKeyDown(e) {
@@ -489,6 +578,15 @@
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = fabricCanvas.getActiveObject();
       if (active && !active.isEditing) {
+        // If it's a pdf-edit object, also remove the pageEdit
+        if (active.customType === 'pdf-edit' && active.editId) {
+          pdfStore.removePageEditById(store.currentPage, active.editId);
+          // Re-render to restore original text (remove cover rect)
+          currentRenderedPage = 0;
+          setTimeout(() => {
+            handleRender(store.pdfBytes, store.currentPage, store.zoom, store.pages, canvasEl);
+          }, 50);
+        }
         deleteSelected(fabricCanvas);
       }
     }
@@ -526,7 +624,12 @@
       <canvas bind:this={canvasEl} class="pdf-canvas"></canvas>
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="fabric-wrapper" onclick={handleCanvasClick}>
+      <div
+        class="fabric-wrapper"
+        onclick={handleCanvasClick}
+        onmousemove={handleCanvasMouseMove}
+        onmouseleave={() => { hoverHint = ''; }}
+      >
         <canvas bind:this={fabricCanvasEl}></canvas>
       </div>
 
@@ -552,6 +655,10 @@
           onkeydown={handleEditKeydown}
           onblur={applyTextEdit}
         >{editingItem.text}</div>
+      {/if}
+
+      {#if hoverHint}
+        <div class="hover-hint">{hoverHint}</div>
       {/if}
     </div>
   {/if}
@@ -587,11 +694,10 @@
     pointer-events: auto;
   }
 
-  /* Live inline text editor — looks like the actual PDF text */
+  /* Live inline text editor */
   .live-editor {
     position: absolute;
     z-index: 100;
-    background: white;
     color: #000;
     outline: none;
     border: none;
@@ -607,6 +713,29 @@
 
   .live-editor:focus {
     box-shadow: 0 0 0 2px #3b82f6, 0 0 8px rgba(59, 130, 246, 0.3);
+  }
+
+  /* Hover hint pill */
+  .hover-hint {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(59, 130, 246, 0.9);
+    color: white;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 20px;
+    pointer-events: none;
+    animation: hintFade 0.15s ease;
+    white-space: nowrap;
+    backdrop-filter: blur(4px);
+  }
+
+  @keyframes hintFade {
+    from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
 
   .viewer-loading, .viewer-error {
