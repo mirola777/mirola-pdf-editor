@@ -313,18 +313,37 @@ export function deleteSelected(fabricCanvas) {
 }
 
 export function serializeCanvas(fabricCanvas) {
+  // Temporarily remove background image (PDF render) before serializing
+  // so we don't store the entire page image in JSON
+  const bg = fabricCanvas.backgroundImage;
+  fabricCanvas.backgroundImage = null;
   const json = fabricCanvas.toJSON(['customType']);
-  // Store canvas dimensions so we can recreate at correct size for PDF export
   json._canvasWidth = fabricCanvas.width;
   json._canvasHeight = fabricCanvas.height;
+  fabricCanvas.backgroundImage = bg;
   return JSON.stringify(json);
 }
 
-export function deserializeCanvas(fabricCanvas, json) {
+export async function deserializeCanvas(fabricCanvas, json) {
   if (!json) return;
-  fabricCanvas.loadFromJSON(json, () => {
-    fabricCanvas.renderAll();
+  return new Promise((resolve) => {
+    fabricCanvas.loadFromJSON(json, () => {
+      fabricCanvas.renderAll();
+      resolve();
+    });
   });
+}
+
+// Set a rendered PDF canvas as the Fabric background image
+export function setPdfBackground(fabricCanvas, sourceCanvas) {
+  const bgImg = new FabricImage(sourceCanvas, {
+    left: 0,
+    top: 0,
+    originX: 'left',
+    originY: 'top',
+  });
+  fabricCanvas.backgroundImage = bgImg;
+  fabricCanvas.renderAll();
 }
 
 export function clearCanvas(fabricCanvas) {

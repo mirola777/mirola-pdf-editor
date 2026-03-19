@@ -7,43 +7,44 @@
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
     serializeCanvas, deserializeCanvas, clearCanvas,
-    createEditableText, findTextAtPosition
+    createEditableText, findTextAtPosition, setPdfBackground
   } from '../lib/fabricManager.js';
 
   let store = $derived($pdfStore);
   let tools = $derived($toolStore);
 
-  // DOM refs (must be $state for bind:this)
+  // DOM refs
   let containerEl = $state(null);
-  let canvasEl = $state(null);
   let fabricCanvasEl = $state(null);
 
-  // Template-bound state (must be $state for DOM reactivity)
+  // Template-bound state
   let pageWidth = $state(0);
   let pageHeight = $state(0);
 
-  // Internal tracking (non-reactive to avoid state-in-effect issues)
+  // Internal tracking (non-reactive)
   let pdfDoc = null;
   let fabricCanvas = null;
   let currentRenderedPage = 0;
   let loadedBytesId = 0;
   let renderVer = 0;
-  let pageTextItems = []; // stored PDF text positions for click-to-edit
+  let pageTextItems = [];
+  // Off-screen canvas for PDF rendering (used as Fabric background)
+  let pdfRenderCanvas = document.createElement('canvas');
 
-  // Single unified effect: watches ALL render-relevant dependencies
+  // Single unified effect
   $effect(() => {
     const bytes = store.pdfBytes;
     const page = store.currentPage;
     const zoom = store.zoom;
     const pages = store.pages;
-    const canvas = canvasEl;
+    const el = fabricCanvasEl;
 
-    if (bytes && canvas && page > 0) {
-      handleRender(bytes, page, zoom, pages, canvas);
+    if (bytes && el && page > 0) {
+      handleRender(bytes, page, zoom, pages, el);
     }
   });
 
-  async function handleRender(bytes, page, zoom, pages, canvas) {
+  async function handleRender(bytes, page, zoom, pages, el) {
     const ver = ++renderVer;
 
     // Load document if bytes changed
@@ -79,16 +80,17 @@
 
     try {
       if (actualPageNum > 0 && actualPageNum <= pdfDoc.numPages) {
-        const dims = await renderPage(pdfDoc, actualPageNum, canvas, zoom * 1.5, rotation);
+        // Render PDF to off-screen canvas
+        const dims = await renderPage(pdfDoc, actualPageNum, pdfRenderCanvas, zoom * 1.5, rotation);
         if (!dims || ver !== renderVer) return;
         w = dims.width;
         h = dims.height;
       } else if (pageInfo.isBlank) {
         w = (pageInfo.blankWidth || 595) * zoom * 1.5;
         h = (pageInfo.blankHeight || 842) * zoom * 1.5;
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
+        pdfRenderCanvas.width = w;
+        pdfRenderCanvas.height = h;
+        const ctx = pdfRenderCanvas.getContext('2d');
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
       }
@@ -103,19 +105,18 @@
     pageHeight = h;
     currentRenderedPage = page;
 
-    // Wait for DOM to update with new dimensions before touching Fabric
     await tick();
     if (ver !== renderVer) return;
 
-    setupFabricOverlay(w, h, pageInfo);
+    await setupFabricOverlay(w, h, pageInfo);
+    if (ver !== renderVer) return;
 
-    // Load text positions for click-to-edit (don't create Fabric objects yet)
+    // Load text positions for click-to-edit
     pageTextItems = [];
     if (actualPageNum > 0 && pdfDoc) {
       try {
         const textItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
         if (ver !== renderVer) return;
-        // Filter out items that already have Fabric objects (from saved state)
         if (pageInfo.fabricJson && fabricCanvas) {
           const existing = fabricCanvas.getObjects().filter(o => o.customType === 'pdf-text');
           pageTextItems = textItems.filter(item => {
@@ -133,7 +134,7 @@
     }
   }
 
-  function setupFabricOverlay(w, h, pageInfo) {
+  async function setupFabricOverlay(w, h, pageInfo) {
     if (!fabricCanvasEl || w <= 0 || h <= 0) return;
 
     if (!fabricCanvas) {
@@ -143,20 +144,25 @@
       fabricCanvas.off('selection:updated');
       fabricCanvas.off('selection:cleared');
       fabricCanvas.off('object:modified');
+      fabricCanvas.backgroundImage = null;
       fabricCanvas.clear();
       fabricCanvas.setDimensions({ width: w, height: h });
     }
 
-    // Selection events → sync formatting to store
+    // Selection events
     fabricCanvas.on('selection:created', handleFabricSelection);
     fabricCanvas.on('selection:updated', handleFabricSelection);
     fabricCanvas.on('selection:cleared', () => toolStore.clearSelectedText());
     fabricCanvas.on('object:modified', handleFabricSelection);
 
-    // Restore saved annotations for this page
+    // Restore saved annotations
     if (pageInfo.fabricJson) {
-      deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
+      await deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
     }
+
+    // Set the PDF render as background image AFTER deserialize
+    // (deserialize clears everything including background)
+    setPdfBackground(fabricCanvas, pdfRenderCanvas);
 
     setupFabricTool();
   }
@@ -178,7 +184,6 @@
     }
   }
 
-  // React to tool changes
   $effect(() => {
     const tool = tools.activeTool;
     if (fabricCanvas && tool) {
@@ -186,14 +191,12 @@
     }
   });
 
-  // Apply text formatting changes from store to selected Fabric object
   $effect(() => {
     const sel = tools.selectedText;
     if (!sel || !fabricCanvas) return;
     const obj = fabricCanvas.getActiveObject();
     if (!obj || (obj.type !== 'i-text' && obj.type !== 'textbox')) return;
 
-    // Only apply if values actually differ (prevent infinite loop)
     let changed = false;
     if (obj.fontSize !== sel.fontSize) { obj.set('fontSize', sel.fontSize); changed = true; }
     if (obj.fontFamily !== sel.fontFamily) { obj.set('fontFamily', sel.fontFamily); changed = true; }
@@ -226,7 +229,6 @@
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
 
-    // Don't add new objects when clicking on an existing Fabric object
     const activeObj = fabricCanvas.getActiveObject();
     if (activeObj) return;
 
@@ -237,11 +239,9 @@
     switch (tools.activeTool) {
       case 'select':
       case 'text-edit': {
-        // Click-to-edit: find PDF text at this position
         const hit = findTextAtPosition(pageTextItems, x, y);
         if (hit) {
           createEditableText(fabricCanvas, hit);
-          // Remove from list so clicking again doesn't create duplicate
           pageTextItems = pageTextItems.filter(t => t !== hit);
         }
         break;
@@ -306,7 +306,6 @@
     </div>
   {:else if store.pdfBytes}
     <div class="page-wrapper" style="width: {pageWidth}px; height: {pageHeight}px;">
-      <canvas bind:this={canvasEl} class="pdf-canvas"></canvas>
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="fabric-wrapper" onclick={handleCanvasClick}>
@@ -333,14 +332,7 @@
     background: white;
   }
 
-  .pdf-canvas {
-    display: block;
-  }
-
   .fabric-wrapper {
-    position: absolute;
-    top: 0;
-    left: 0;
     width: 100%;
     height: 100%;
     pointer-events: auto;
