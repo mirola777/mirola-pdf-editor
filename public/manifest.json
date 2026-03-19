@@ -1,0 +1,16 @@
+{
+  "name": "Mirola's PDF Editor",
+  "short_name": "PDF Editor",
+  "description": "Free online PDF editor. Edit text, merge, split, annotate, sign, and more. No signup required.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

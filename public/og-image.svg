@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <text x="600" y="280" text-anchor="middle" font-family="system-ui, sans-serif" font-size="72" font-weight="700" fill="white">Mirola's PDF Editor</text>
+  <text x="600" y="340" text-anchor="middle" font-family="system-ui, sans-serif" font-size="28" fill="#94a3b8">Free Online PDF Editor - Edit, Merge, Split, Annotate</text>
+  <rect x="450" y="380" width="300" height="50" rx="25" fill="#3b82f6"/>
+  <text x="600" y="412" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" font-weight="600" fill="white">Try it Free</text>
+  <text x="600" y="580" text-anchor="middle" font-family="monospace" font-size="16" fill="#64748b">mirola-pdf-editor.vercel.app</text>
+</svg>
