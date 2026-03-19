@@ -235,6 +235,36 @@ export async function flattenForm(pdfBytes) {
   return await doc.save();
 }
 
+// Flatten Fabric canvas annotations into the actual PDF pages.
+// Each overlay has { pageIndex, pngDataUrl } where the PNG is a transparent image
+// of the Fabric canvas rendered at the correct scale.
+export async function flattenAnnotationsIntoPdf(pdfBytes, overlays) {
+  const doc = await PDFDocument.load(pdfBytes);
+  const pages = doc.getPages();
+
+  for (const { pageIndex, pngDataUrl } of overlays) {
+    if (pageIndex < 0 || pageIndex >= pages.length) continue;
+    const page = pages[pageIndex];
+    const { width, height } = page.getSize();
+
+    // Convert data URL to raw bytes
+    const base64 = pngDataUrl.split(',')[1];
+    const pngBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const pngImage = await doc.embedPng(pngBytes);
+
+    // Draw the annotation overlay covering the full page
+    // pdf-lib scales the image to fit, so coordinates align automatically
+    page.drawImage(pngImage, {
+      x: 0,
+      y: 0,
+      width,
+      height,
+    });
+  }
+
+  return await doc.save();
+}
+
 function hexToRgb(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
   const g = parseInt(hex.slice(3, 5), 16) / 255;

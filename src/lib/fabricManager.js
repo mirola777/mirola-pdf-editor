@@ -313,7 +313,11 @@ export function deleteSelected(fabricCanvas) {
 }
 
 export function serializeCanvas(fabricCanvas) {
-  return JSON.stringify(fabricCanvas.toJSON(['customType']));
+  const json = fabricCanvas.toJSON(['customType']);
+  // Store canvas dimensions so we can recreate at correct size for PDF export
+  json._canvasWidth = fabricCanvas.width;
+  json._canvasHeight = fabricCanvas.height;
+  return JSON.stringify(json);
 }
 
 export function deserializeCanvas(fabricCanvas, json) {
@@ -331,4 +335,37 @@ export function clearCanvas(fabricCanvas) {
 
 export function canvasToImageBytes(fabricCanvas) {
   return fabricCanvas.toDataURL({ format: 'png', multiplier: 2 });
+}
+
+// Render fabricJson to a transparent PNG for embedding into the final PDF.
+// Creates a temporary off-screen Fabric canvas, loads the JSON, renders, and returns a data URL.
+export async function renderFabricJsonToPng(fabricJson) {
+  const parsed = typeof fabricJson === 'string' ? JSON.parse(fabricJson) : fabricJson;
+  const width = parsed._canvasWidth || 800;
+  const height = parsed._canvasHeight || 1000;
+
+  // Fabric.js requires a DOM-attached canvas for proper initialization
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'position:fixed;left:-9999px;top:-9999px;pointer-events:none;';
+  const tempCanvasEl = document.createElement('canvas');
+  wrapper.appendChild(tempCanvasEl);
+  document.body.appendChild(wrapper);
+
+  try {
+    const fc = new Canvas(tempCanvasEl, { width, height });
+    fc.backgroundColor = '';
+
+    await new Promise((resolve) => {
+      fc.loadFromJSON(parsed, () => {
+        fc.renderAll();
+        resolve();
+      });
+    });
+
+    const dataUrl = fc.toDataURL({ format: 'png' });
+    fc.dispose();
+    return dataUrl;
+  } finally {
+    wrapper.remove();
+  }
 }

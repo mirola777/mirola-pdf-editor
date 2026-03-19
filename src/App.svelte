@@ -7,10 +7,10 @@
   import { theme } from './stores/settingsStore.js';
   import { historyStore } from './stores/historyStore.js';
   import { readFileAsArrayBuffer } from './lib/fileUtils.js';
-  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages } from './lib/pdfEngine.js';
+  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages, flattenAnnotationsIntoPdf } from './lib/pdfEngine.js';
   import { loadPdfDocument, renderPage, extractAllText } from './lib/pdfRenderer.js';
   import { downloadBytes, downloadText } from './lib/fileUtils.js';
-  import { addImageToCanvas } from './lib/fabricManager.js';
+  import { addImageToCanvas, renderFabricJsonToPng } from './lib/fabricManager.js';
 
   import Header from './components/Header.svelte';
   import Footer from './components/Footer.svelte';
@@ -72,8 +72,20 @@
     if (pdfViewer) pdfViewer.saveFabricState();
 
     try {
-      // Apply page operations (rotations, deletions, reorder)
       let bytes = store.pdfBytes;
+
+      // Flatten Fabric annotations (text edits, drawings, shapes) into the PDF
+      const overlays = [];
+      for (let i = 0; i < store.pages.length; i++) {
+        const page = store.pages[i];
+        if (page.fabricJson && !page.deleted && !page.isBlank) {
+          const pngDataUrl = await renderFabricJsonToPng(page.fabricJson);
+          overlays.push({ pageIndex: page.pageNum - 1, pngDataUrl });
+        }
+      }
+      if (overlays.length > 0) {
+        bytes = await flattenAnnotationsIntoPdf(bytes, overlays);
+      }
 
       // Apply rotations
       const rotations = store.pages
