@@ -235,34 +235,123 @@ export async function flattenForm(pdfBytes) {
   return await doc.save();
 }
 
-// Flatten Fabric canvas annotations into the actual PDF pages.
-// Each overlay has { pageIndex, pngDataUrl } where the PNG is a transparent image
-// of the Fabric canvas rendered at the correct scale.
-export async function flattenAnnotationsIntoPdf(pdfBytes, overlays) {
+// Write Fabric text edits directly into the PDF using pdf-lib.
+// For each text object: draw a white rectangle to cover the original, then draw the new text.
+// This produces real PDF text (selectable, searchable) — no image layers.
+export async function flattenAnnotationsIntoPdf(pdfBytes, pageAnnotations) {
   const doc = await PDFDocument.load(pdfBytes);
   const pages = doc.getPages();
 
-  for (const { pageIndex, pngDataUrl } of overlays) {
+  // Font cache to avoid re-embedding
+  const fontCache = {};
+  async function getFont(family, weight, style) {
+    const stdFont = mapToStandardFont(family, weight, style);
+    if (!fontCache[stdFont]) {
+      fontCache[stdFont] = await doc.embedFont(stdFont);
+    }
+    return fontCache[stdFont];
+  }
+
+  for (const { pageIndex, fabricJson } of pageAnnotations) {
     if (pageIndex < 0 || pageIndex >= pages.length) continue;
     const page = pages[pageIndex];
-    const { width, height } = page.getSize();
+    const { width: pageW, height: pageH } = page.getSize();
 
-    // Convert data URL to raw bytes
-    const base64 = pngDataUrl.split(',')[1];
-    const pngBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-    const pngImage = await doc.embedPng(pngBytes);
+    const parsed = typeof fabricJson === 'string' ? JSON.parse(fabricJson) : fabricJson;
+    const canvasW = parsed._canvasWidth || pageW * 1.5;
+    const canvasH = parsed._canvasHeight || pageH * 1.5;
+    const scale = canvasW / pageW; // uniform scale (canvasH / pageH should be the same)
 
-    // Draw the annotation overlay covering the full page
-    // pdf-lib scales the image to fit, so coordinates align automatically
-    page.drawImage(pngImage, {
-      x: 0,
-      y: 0,
-      width,
-      height,
-    });
+    for (const obj of parsed.objects || []) {
+      if (obj.type !== 'i-text') continue;
+      if (!obj.text || !obj.text.trim()) continue;
+
+      const pdfFontSize = obj.fontSize / scale;
+      const pdfX = obj.left / scale;
+      // Fabric top is the top of the text box; baseline is ~82% below top
+      const fabricBaseline = obj.top + obj.fontSize * 0.82;
+      // PDF Y: origin at bottom-left, so invert
+      const pdfBaselineY = pageH - fabricBaseline / scale;
+
+      const font = await getFont(
+        obj.fontFamily || 'Helvetica',
+        obj.fontWeight || 'normal',
+        obj.fontStyle || 'normal',
+      );
+
+      const color = obj.fill ? hexToRgb(obj.fill) : rgb(0, 0, 0);
+
+      // Handle multiline text
+      const lines = obj.text.split('\n');
+      const lineHeight = pdfFontSize * 1.2;
+
+      // Calculate max line width for the white cover rectangle
+      let maxWidth = 0;
+      for (const line of lines) {
+        if (line.length > 0) {
+          const w = font.widthOfTextAtSize(line, pdfFontSize);
+          if (w > maxWidth) maxWidth = w;
+        }
+      }
+
+      // Draw white rectangle to cover original text
+      const pad = 2;
+      const rectHeight = lines.length * lineHeight + pad * 2;
+      const rectY = pdfBaselineY - (lines.length - 1) * lineHeight - pdfFontSize * 0.3 - pad;
+      page.drawRectangle({
+        x: pdfX - pad,
+        y: rectY,
+        width: maxWidth + pad * 2,
+        height: rectHeight,
+        color: rgb(1, 1, 1),
+        borderWidth: 0,
+      });
+
+      // Draw each line of text
+      let lineY = pdfBaselineY;
+      for (const line of lines) {
+        if (line.length > 0) {
+          page.drawText(line, {
+            x: pdfX,
+            y: lineY,
+            size: pdfFontSize,
+            font,
+            color,
+          });
+        }
+        lineY -= lineHeight;
+      }
+    }
   }
 
   return await doc.save();
+}
+
+// Map Fabric font families to pdf-lib StandardFonts
+function mapToStandardFont(family, weight, style) {
+  const isBold = weight === 'bold';
+  const isItalic = style === 'italic';
+  const lower = (family || '').toLowerCase();
+
+  if (lower.includes('times') || lower.includes('georgia')) {
+    if (isBold && isItalic) return StandardFonts.TimesRomanBoldItalic;
+    if (isBold) return StandardFonts.TimesRomanBold;
+    if (isItalic) return StandardFonts.TimesRomanItalic;
+    return StandardFonts.TimesRoman;
+  }
+
+  if (lower.includes('courier') || lower.includes('mono')) {
+    if (isBold && isItalic) return StandardFonts.CourierBoldOblique;
+    if (isBold) return StandardFonts.CourierBold;
+    if (isItalic) return StandardFonts.CourierOblique;
+    return StandardFonts.Courier;
+  }
+
+  // Default: Helvetica (covers Arial, Helvetica, Verdana, Trebuchet, Impact)
+  if (isBold && isItalic) return StandardFonts.HelveticaBoldOblique;
+  if (isBold) return StandardFonts.HelveticaBold;
+  if (isItalic) return StandardFonts.HelveticaOblique;
+  return StandardFonts.Helvetica;
 }
 
 function hexToRgb(hex) {
