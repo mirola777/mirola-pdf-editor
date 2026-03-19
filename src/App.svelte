@@ -7,7 +7,7 @@
   import { theme } from './stores/settingsStore.js';
   import { historyStore } from './stores/historyStore.js';
   import { readFileAsArrayBuffer } from './lib/fileUtils.js';
-  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages } from './lib/pdfEngine.js';
+  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages, applyAllEdits } from './lib/pdfEngine.js';
   import { loadPdfDocument, renderPage, extractAllText } from './lib/pdfRenderer.js';
   import { downloadBytes, downloadText } from './lib/fileUtils.js';
   import { addImageToCanvas } from './lib/fabricManager.js';
@@ -73,6 +73,12 @@
 
     try {
       let bytes = store.pdfBytes;
+
+      // Apply all stored text edits into the PDF
+      const edits = store.pageEdits;
+      if (edits && Object.keys(edits).length > 0) {
+        bytes = await applyAllEdits(bytes, edits);
+      }
 
       // Apply rotations
       const rotations = store.pages

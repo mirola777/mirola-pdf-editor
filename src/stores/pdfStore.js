@@ -10,6 +10,7 @@ const DEFAULTS = {
   zoom: 1.0,
   fitMode: 'width',
   pages: [],
+  pageEdits: {},  // { [pageNum]: [edit, ...] } — text edits stored until download
   metadata: { title: '', author: '', subject: '', keywords: '', creator: '', producer: '' },
   isModified: false,
   isLoading: false,
@@ -137,6 +138,29 @@ function createPdfStore() {
 
     updatePdfBytes(pdfBytes) {
       update(s => ({ ...s, pdfBytes }));
+    },
+
+    addPageEdit(pageNum, edit) {
+      update(s => {
+        const pageEdits = { ...s.pageEdits };
+        const edits = [...(pageEdits[pageNum] || [])];
+        // Update existing edit at same position, or add new
+        const existingIdx = edits.findIndex(e =>
+          Math.abs(e.pdfX - edit.pdfX) < 3 && Math.abs(e.pdfY - edit.pdfY) < 3
+        );
+        if (existingIdx >= 0) {
+          // Preserve the very first originalText
+          edits[existingIdx] = { ...edit, originalText: edits[existingIdx].originalText };
+        } else {
+          edits.push(edit);
+        }
+        pageEdits[pageNum] = edits;
+        return { ...s, pageEdits, isModified: true };
+      });
+    },
+
+    clearAllEdits() {
+      update(s => ({ ...s, pageEdits: {} }));
     },
 
     setModified(modified) {

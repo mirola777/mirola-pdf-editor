@@ -3,7 +3,6 @@
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
   import { loadPdfDocument, renderPage, getPageTextContent } from '../lib/pdfRenderer.js';
-  import { editTextInPdf } from '../lib/pdfEngine.js';
   import {
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
@@ -37,7 +36,7 @@
   let renderVer = 0;
   let pageTextItems = [];
 
-  // Single unified effect
+  // Render effect — watches store values, NOT pageEdits (edits are visual-only)
   $effect(() => {
     const bytes = store.pdfBytes;
     const page = store.currentPage;
@@ -54,7 +53,6 @@
   $effect(() => {
     if (editorRef && editingItem) {
       editorRef.focus();
-      // Select all text in contenteditable
       const range = document.createRange();
       range.selectNodeContents(editorRef);
       const sel = window.getSelection();
@@ -121,6 +119,12 @@
     pageHeight = h;
     currentRenderedPage = page;
 
+    // Apply stored visual edits AFTER rendering the page
+    const edits = store.pageEdits[page];
+    if (edits && edits.length) {
+      paintEditsOnCanvas(canvas, edits, zoom * 1.5, h);
+    }
+
     await tick();
     if (ver !== renderVer) return;
 
@@ -132,8 +136,66 @@
       try {
         pageTextItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
         if (ver !== renderVer) return;
+        // Merge stored edits so re-clicking shows edited text
+        mergeEditsIntoTextItems(edits, zoom * 1.5, h);
       } catch (err) {
         console.warn('Text layer error:', err.message);
+      }
+    }
+  }
+
+  // Paint stored edits directly on the PDF canvas (white rect + new text)
+  function paintEditsOnCanvas(canvas, edits, scale, canvasHeight) {
+    if (!edits || !edits.length) return;
+    const ctx = canvas.getContext('2d');
+    const pdfPageH = canvasHeight / scale;
+
+    for (const edit of edits) {
+      const cx = edit.pdfX * scale;
+      const cy = (pdfPageH - edit.pdfY) * scale;
+      const cFontSize = edit.pdfFontSize * scale;
+
+      const { fontFamily, fontWeight, fontStyle } = parsePdfFont(edit.fontName);
+      ctx.font = `${fontWeight} ${fontStyle} ${cFontSize}px ${fontFamily}, Helvetica, Arial, sans-serif`;
+
+      const origWidth = ctx.measureText(edit.originalText).width;
+      const newWidth = edit.newText ? ctx.measureText(edit.newText).width : 0;
+      const coverWidth = Math.max(origWidth, newWidth);
+
+      // White rect to cover original text
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - 2, cy - cFontSize * 0.85, coverWidth + 6, cFontSize * 1.15);
+
+      // Draw new text
+      if (edit.newText && edit.newText.trim()) {
+        ctx.fillStyle = '#000000';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(edit.newText, cx, cy);
+      }
+    }
+  }
+
+  // Update pageTextItems to reflect stored edits (so re-clicking shows edited text)
+  function mergeEditsIntoTextItems(edits, scale, canvasHeight) {
+    if (!edits || !edits.length) return;
+    const pdfPageH = canvasHeight / scale;
+
+    for (let i = 0; i < pageTextItems.length; i++) {
+      const item = pageTextItems[i];
+      const itemPdfX = item.x / scale;
+      const itemPdfY = pdfPageH - item.y / scale;
+
+      const edit = edits.find(e =>
+        Math.abs(e.pdfX - itemPdfX) < 3 && Math.abs(e.pdfY - itemPdfY) < 3
+      );
+
+      if (edit) {
+        pageTextItems[i] = {
+          ...item,
+          text: edit.newText,
+          _originalText: edit.originalText,
+          _edited: true,
+        };
       }
     }
   }
@@ -223,7 +285,6 @@
   }
 
   function openTextEditor(hit) {
-    // Parse font info to match the PDF text style
     const { fontFamily, fontWeight, fontStyle } = parsePdfFont(hit.fontName);
     const textW = hit.width || hit.text.length * hit.fontSize * 0.55;
 
@@ -238,14 +299,14 @@
       fontStyle,
     };
 
-    // Paint white on the PDF canvas to hide original text instantly
+    // Paint white on the PDF canvas to hide original/current text instantly
     if (canvasEl) {
       const ctx = canvasEl.getContext('2d');
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(
         hit.x - 2,
         hit.y - hit.fontSize * 0.9,
-        textW + 4,
+        textW + 6,
         hit.fontSize * 1.15
       );
     }
@@ -305,46 +366,69 @@
   }
 
   function cancelEdit() {
+    const item = editingItem;
     editingItem = null;
     editStyle = {};
-    // Re-render to restore painted-over text
-    loadedBytesId = 0;
-    pdfStore.updatePdfBytes(store.pdfBytes);
+
+    // Re-render page to restore canvas (repaint original + any stored edits)
+    currentRenderedPage = 0;
+    handleRender(store.pdfBytes, store.currentPage, store.zoom, store.pages, canvasEl);
   }
 
   async function applyTextEdit() {
     if (!editingItem || isApplying) return;
 
     const newText = editorRef?.innerText?.trim() || '';
-    const originalText = editingItem.text;
+    const currentText = editingItem.text;
 
-    // If text didn't change, cancel
-    if (newText === originalText) {
+    // If text didn't change, just close editor
+    if (newText === currentText) {
       cancelEdit();
       return;
     }
 
     isApplying = true;
 
-    try {
-      const zoom = store.zoom;
-      const scale = zoom * 1.5;
-      const pageIndex = store.pages[store.currentPage - 1].pageNum - 1;
+    const scale = store.zoom * 1.5;
+    const pdfPageH = pageHeight / scale;
+    const pdfX = editingItem.x / scale;
+    const pdfY = pdfPageH - editingItem.y / scale;
+    const pdfFontSize = editingItem.fontSize / scale;
 
-      const newBytes = await editTextInPdf(store.pdfBytes, pageIndex, {
-        x: editingItem.x,
-        y: editingItem.y,
-        fontSize: editingItem.fontSize,
-        fontName: editingItem.fontName,
-        originalText,
-        newText,
-        scale,
-      });
+    // The "original text" is the text from the original PDF (before any edits)
+    const originalText = editingItem._originalText || currentText;
 
-      loadedBytesId = 0;
-      pdfStore.updatePdfBytes(newBytes);
-    } catch (err) {
-      console.error('Text edit failed:', err);
+    // Store the edit (no PDF bytes change!)
+    pdfStore.addPageEdit(store.currentPage, {
+      pdfX,
+      pdfY,
+      pdfFontSize,
+      fontName: editingItem.fontName,
+      originalText,
+      newText,
+    });
+
+    // Paint the edit directly on the canvas (white rect is already there)
+    if (canvasEl) {
+      const ctx = canvasEl.getContext('2d');
+      const { fontFamily, fontWeight, fontStyle } = parsePdfFont(editingItem.fontName);
+      ctx.font = `${fontWeight} ${fontStyle} ${editingItem.fontSize}px ${fontFamily}, Helvetica, Arial, sans-serif`;
+      ctx.fillStyle = '#000000';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(newText, editingItem.x, editingItem.y);
+    }
+
+    // Update the text item in memory so re-clicking shows the new text
+    const idx = pageTextItems.findIndex(item =>
+      Math.abs(item.x - editingItem.x) < 2 && Math.abs(item.y - editingItem.y) < 2
+    );
+    if (idx >= 0) {
+      pageTextItems[idx] = {
+        ...pageTextItems[idx],
+        text: newText,
+        _originalText: originalText,
+        _edited: true,
+      };
     }
 
     editingItem = null;

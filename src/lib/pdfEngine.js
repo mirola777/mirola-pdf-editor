@@ -235,8 +235,63 @@ export async function flattenForm(pdfBytes) {
   return await doc.save();
 }
 
-// Edit text directly in the PDF. Draws a white rect over the original text,
-// then writes the new text as real PDF text. Returns new PDF bytes.
+// Apply all stored text edits to the PDF at download time.
+// Each edit has pdfX, pdfY, pdfFontSize in PDF coordinate space.
+export async function applyAllEdits(pdfBytes, allPageEdits) {
+  const doc = await PDFDocument.load(pdfBytes);
+  const pages = doc.getPages();
+
+  // Cache embedded fonts to avoid duplicates
+  const fontCache = {};
+
+  for (const [pageNumStr, edits] of Object.entries(allPageEdits)) {
+    const pageIndex = parseInt(pageNumStr) - 1;
+    if (pageIndex < 0 || pageIndex >= pages.length) continue;
+    if (!edits || !edits.length) continue;
+
+    const page = pages[pageIndex];
+
+    for (const edit of edits) {
+      const { family, weight, style } = parsePdfFontName(edit.fontName);
+      const stdFont = mapToStandardFont(family, weight, style);
+      const cacheKey = stdFont;
+
+      if (!fontCache[cacheKey]) {
+        fontCache[cacheKey] = await doc.embedFont(stdFont);
+      }
+      const font = fontCache[cacheKey];
+
+      const origWidth = font.widthOfTextAtSize(edit.originalText, edit.pdfFontSize);
+      const newWidth = edit.newText ? font.widthOfTextAtSize(edit.newText, edit.pdfFontSize) : 0;
+      const coverWidth = Math.max(origWidth, newWidth);
+
+      // White rectangle to cover original text
+      page.drawRectangle({
+        x: edit.pdfX - 1,
+        y: edit.pdfY - edit.pdfFontSize * 0.25,
+        width: coverWidth + 2,
+        height: edit.pdfFontSize * 1.2,
+        color: rgb(1, 1, 1),
+        borderWidth: 0,
+      });
+
+      // Draw new text
+      if (edit.newText && edit.newText.trim()) {
+        page.drawText(edit.newText, {
+          x: edit.pdfX,
+          y: edit.pdfY,
+          size: edit.pdfFontSize,
+          font,
+          color: rgb(0, 0, 0),
+        });
+      }
+    }
+  }
+
+  return await doc.save();
+}
+
+// Legacy single-edit function (kept for compatibility)
 export async function editTextInPdf(pdfBytes, pageIndex, edit) {
   const doc = await PDFDocument.load(pdfBytes);
   const pages = doc.getPages();
@@ -245,23 +300,19 @@ export async function editTextInPdf(pdfBytes, pageIndex, edit) {
   const page = pages[pageIndex];
   const { height: pageH } = page.getSize();
 
-  // Convert canvas coordinates → PDF coordinates
-  const scale = edit.scale; // zoom * 1.5
+  const scale = edit.scale;
   const pdfX = edit.x / scale;
-  const pdfY = pageH - edit.y / scale; // canvas Y (top-down) → PDF Y (bottom-up)
+  const pdfY = pageH - edit.y / scale;
   const pdfFontSize = edit.fontSize / scale;
 
-  // Determine font from PDF font name
   const { family, weight, style } = parsePdfFontName(edit.fontName);
   const stdFont = mapToStandardFont(family, weight, style);
   const font = await doc.embedFont(stdFont);
 
-  // Calculate widths for the cover rectangle
   const origWidth = font.widthOfTextAtSize(edit.originalText, pdfFontSize);
   const newWidth = edit.newText ? font.widthOfTextAtSize(edit.newText, pdfFontSize) : 0;
   const coverWidth = Math.max(origWidth, newWidth);
 
-  // White rectangle to cover original text — tight fit, minimal padding
   page.drawRectangle({
     x: pdfX - 1,
     y: pdfY - pdfFontSize * 0.25,
@@ -271,7 +322,6 @@ export async function editTextInPdf(pdfBytes, pageIndex, edit) {
     borderWidth: 0,
   });
 
-  // Draw new text
   if (edit.newText && edit.newText.trim()) {
     page.drawText(edit.newText, {
       x: pdfX,
