@@ -237,7 +237,7 @@ export async function addImageToCanvas(fabricCanvas, imageUrl, x, y, maxWidth = 
 }
 
 // Parse PDF font name into family, weight, style
-function parsePdfFont(fontName) {
+export function parsePdfFont(fontName) {
   if (!fontName) return { fontFamily: 'Helvetica', fontWeight: 'normal', fontStyle: 'normal' };
   const lower = fontName.toLowerCase();
   const fontWeight = lower.includes('bold') ? 'bold' : 'normal';

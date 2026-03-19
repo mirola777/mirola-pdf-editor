@@ -8,7 +8,7 @@
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
     serializeCanvas, deserializeCanvas, clearCanvas,
-    findTextAtPosition
+    findTextAtPosition, parsePdfFont
   } from '../lib/fabricManager.js';
 
   let store = $derived($pdfStore);
@@ -26,7 +26,7 @@
 
   // Inline text editor state
   let editingItem = $state(null);
-  let editValue = $state('');
+  let editStyle = $state({});
   let isApplying = $state(false);
 
   // Internal tracking (non-reactive)
@@ -50,11 +50,16 @@
     }
   });
 
-  // Auto-focus editor when it appears
+  // Auto-focus and select editor text when it appears
   $effect(() => {
     if (editorRef && editingItem) {
       editorRef.focus();
-      editorRef.select();
+      // Select all text in contenteditable
+      const range = document.createRange();
+      range.selectNodeContents(editorRef);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
     }
   });
 
@@ -76,7 +81,6 @@
 
     if (!pdfDoc) return;
 
-    // Save fabric state before switching pages
     if (fabricCanvas && currentRenderedPage > 0 && currentRenderedPage !== page) {
       try {
         const json = serializeCanvas(fabricCanvas);
@@ -218,11 +222,41 @@
     }
   }
 
+  function openTextEditor(hit) {
+    // Parse font info to match the PDF text style
+    const { fontFamily, fontWeight, fontStyle } = parsePdfFont(hit.fontName);
+    const textW = hit.width || hit.text.length * hit.fontSize * 0.55;
+
+    editStyle = {
+      left: hit.x - 1,
+      top: hit.y - hit.fontSize * 0.9,
+      fontSize: hit.fontSize,
+      width: Math.min(textW + 20, pageWidth - hit.x - 4),
+      maxWidth: pageWidth - hit.x - 4,
+      fontFamily,
+      fontWeight,
+      fontStyle,
+    };
+
+    // Paint white on the PDF canvas to hide original text instantly
+    if (canvasEl) {
+      const ctx = canvasEl.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(
+        hit.x - 2,
+        hit.y - hit.fontSize * 0.9,
+        textW + 4,
+        hit.fontSize * 1.15
+      );
+    }
+
+    editingItem = hit;
+  }
+
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
     if (editingItem || isApplying) return;
 
-    // Don't add objects when clicking on existing Fabric object
     const activeObj = fabricCanvas.getActiveObject();
     if (activeObj) return;
 
@@ -233,19 +267,9 @@
     switch (tools.activeTool) {
       case 'select':
       case 'text-edit': {
-        // Click-to-edit: show inline HTML editor over the text
         const hit = findTextAtPosition(pageTextItems, x, y);
         if (hit) {
-          // Paint white on the PDF canvas immediately to hide original text
-          if (canvasEl) {
-            const ctx = canvasEl.getContext('2d');
-            ctx.fillStyle = '#ffffff';
-            const top = hit.y - hit.fontSize;
-            const w = hit.width || hit.text.length * hit.fontSize * 0.6;
-            ctx.fillRect(hit.x - 1, top, w + 2, hit.fontSize * 1.3);
-          }
-          editingItem = hit;
-          editValue = hit.text;
+          openTextEditor(hit);
         }
         break;
       }
@@ -273,27 +297,30 @@
   function handleEditKeydown(e) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      applyTextEdit();
+      editorRef?.blur();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      editingItem = null;
-      editValue = '';
-      // Re-render page to restore the text we painted over
-      loadedBytesId = 0;
-      pdfStore.updatePdfBytes(store.pdfBytes);
+      cancelEdit();
     }
+  }
+
+  function cancelEdit() {
+    editingItem = null;
+    editStyle = {};
+    // Re-render to restore painted-over text
+    loadedBytesId = 0;
+    pdfStore.updatePdfBytes(store.pdfBytes);
   }
 
   async function applyTextEdit() {
     if (!editingItem || isApplying) return;
 
-    // If text didn't change, just close and restore painted area
-    if (editValue === editingItem.text) {
-      editingItem = null;
-      editValue = '';
-      // Re-render to restore the text we painted white over
-      loadedBytesId = 0;
-      pdfStore.updatePdfBytes(store.pdfBytes);
+    const newText = editorRef?.innerText?.trim() || '';
+    const originalText = editingItem.text;
+
+    // If text didn't change, cancel
+    if (newText === originalText) {
+      cancelEdit();
       return;
     }
 
@@ -304,34 +331,29 @@
       const scale = zoom * 1.5;
       const pageIndex = store.pages[store.currentPage - 1].pageNum - 1;
 
-      // Modify the PDF directly using pdf-lib
       const newBytes = await editTextInPdf(store.pdfBytes, pageIndex, {
         x: editingItem.x,
         y: editingItem.y,
         fontSize: editingItem.fontSize,
         fontName: editingItem.fontName,
-        originalText: editingItem.text,
-        newText: editValue,
+        originalText,
+        newText,
         scale,
       });
 
-      // Force document reload on next render
       loadedBytesId = 0;
-
-      // Update store → triggers re-render with the ACTUAL modified PDF
       pdfStore.updatePdfBytes(newBytes);
     } catch (err) {
       console.error('Text edit failed:', err);
-      alert('Error editing text: ' + err.message);
     }
 
     editingItem = null;
-    editValue = '';
+    editStyle = {};
     isApplying = false;
   }
 
   function handleKeyDown(e) {
-    if (editingItem) return; // Don't interfere with editor
+    if (editingItem) return;
     if (!fabricCanvas) return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = fabricCanvas.getActiveObject();
@@ -378,26 +400,26 @@
       </div>
 
       {#if editingItem}
-        {@const inputW = Math.min(
-          Math.max(editingItem.width || editingItem.text.length * editingItem.fontSize * 0.55, editingItem.fontSize * 4),
-          pageWidth - editingItem.x - 4
-        )}
-        <input
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
           bind:this={editorRef}
-          type="text"
-          class="inline-text-editor"
+          class="live-editor"
+          contenteditable="true"
+          role="textbox"
+          tabindex="0"
           style="
-            left: {editingItem.x - 2}px;
-            top: {editingItem.y - editingItem.fontSize}px;
-            font-size: {Math.round(editingItem.fontSize * 0.85)}px;
-            height: {editingItem.fontSize * 1.2}px;
-            width: {inputW}px;
-            max-width: {pageWidth - editingItem.x - 4}px;
+            left: {editStyle.left}px;
+            top: {editStyle.top}px;
+            font-size: {editStyle.fontSize}px;
+            min-width: {editStyle.width}px;
+            max-width: {editStyle.maxWidth}px;
+            font-family: {editStyle.fontFamily}, Helvetica, Arial, sans-serif;
+            font-weight: {editStyle.fontWeight};
+            font-style: {editStyle.fontStyle};
           "
-          bind:value={editValue}
           onkeydown={handleEditKeydown}
           onblur={applyTextEdit}
-        />
+        >{editingItem.text}</div>
       {/if}
     </div>
   {/if}
@@ -433,17 +455,26 @@
     pointer-events: auto;
   }
 
-  .inline-text-editor {
+  /* Live inline text editor — looks like the actual PDF text */
+  .live-editor {
     position: absolute;
-    border: 2px solid var(--accent, #3b82f6);
-    background: rgba(255, 255, 255, 0.95);
-    padding: 0 3px;
-    outline: none;
-    box-sizing: border-box;
     z-index: 100;
-    font-family: Helvetica, Arial, sans-serif;
+    background: white;
     color: #000;
-    line-height: 1.2;
+    outline: none;
+    border: none;
+    padding: 0 1px;
+    margin: 0;
+    line-height: 1.15;
+    white-space: pre;
+    cursor: text;
+    box-shadow: 0 0 0 1.5px #3b82f6;
+    border-radius: 1px;
+    box-sizing: content-box;
+  }
+
+  .live-editor:focus {
+    box-shadow: 0 0 0 2px #3b82f6, 0 0 8px rgba(59, 130, 246, 0.3);
   }
 
   .viewer-loading, .viewer-error {
