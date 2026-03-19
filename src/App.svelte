@@ -7,7 +7,7 @@
   import { theme } from './stores/settingsStore.js';
   import { historyStore } from './stores/historyStore.js';
   import { readFileAsArrayBuffer } from './lib/fileUtils.js';
-  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages, flattenAnnotationsIntoPdf } from './lib/pdfEngine.js';
+  import { loadPdfLib, getMetadata, savePdf, deletePages, rotatePagesInPdf, reorderPagesInPdf, flattenForm, extractPages } from './lib/pdfEngine.js';
   import { loadPdfDocument, renderPage, extractAllText } from './lib/pdfRenderer.js';
   import { downloadBytes, downloadText } from './lib/fileUtils.js';
   import { addImageToCanvas } from './lib/fabricManager.js';
@@ -73,18 +73,6 @@
 
     try {
       let bytes = store.pdfBytes;
-
-      // Flatten text edits directly into the PDF (real PDF text, no image layers)
-      const edits = [];
-      for (let i = 0; i < store.pages.length; i++) {
-        const page = store.pages[i];
-        if (page.fabricJson && !page.deleted && !page.isBlank) {
-          edits.push({ pageIndex: page.pageNum - 1, fabricJson: page.fabricJson });
-        }
-      }
-      if (edits.length > 0) {
-        bytes = await flattenAnnotationsIntoPdf(bytes, edits);
-      }
 
       // Apply rotations
       const rotations = store.pages

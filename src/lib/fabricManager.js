@@ -251,38 +251,6 @@ function parsePdfFont(fontName) {
   return { fontFamily, fontWeight, fontStyle };
 }
 
-// Create a single editable text object when user clicks on a PDF text item.
-// Uses backgroundColor to cover the original rendered PDF text underneath.
-export function createEditableText(fabricCanvas, item) {
-  const { fontFamily, fontWeight, fontStyle } = parsePdfFont(item.fontName);
-
-  const textObj = new IText(item.text, {
-    left: item.x,
-    top: item.y - item.fontSize * 0.82,
-    fontSize: item.fontSize,
-    fontFamily,
-    fontWeight,
-    fontStyle,
-    fill: '#000000',
-    backgroundColor: '#ffffff',
-    editable: true,
-    selectable: true,
-    hoverCursor: 'text',
-    padding: 2,
-    borderColor: '#3b82f6',
-    cornerColor: '#3b82f6',
-    cornerSize: 6,
-    transparentCorners: false,
-    customType: 'pdf-text',
-  });
-
-  fabricCanvas.add(textObj);
-  fabricCanvas.setActiveObject(textObj);
-  textObj.enterEditing();
-  fabricCanvas.renderAll();
-  return textObj;
-}
-
 // Find text item at a given position from stored text items list
 export function findTextAtPosition(textItems, x, y) {
   if (!textItems || !textItems.length) return null;
@@ -324,26 +292,11 @@ export function serializeCanvas(fabricCanvas) {
   return JSON.stringify(json);
 }
 
-export async function deserializeCanvas(fabricCanvas, json) {
+export function deserializeCanvas(fabricCanvas, json) {
   if (!json) return;
-  return new Promise((resolve) => {
-    fabricCanvas.loadFromJSON(json, () => {
-      fabricCanvas.renderAll();
-      resolve();
-    });
+  fabricCanvas.loadFromJSON(json, () => {
+    fabricCanvas.renderAll();
   });
-}
-
-// Set a rendered PDF canvas as the Fabric background image
-export function setPdfBackground(fabricCanvas, sourceCanvas) {
-  const bgImg = new FabricImage(sourceCanvas, {
-    left: 0,
-    top: 0,
-    originX: 'left',
-    originY: 'top',
-  });
-  fabricCanvas.backgroundImage = bgImg;
-  fabricCanvas.renderAll();
 }
 
 export function clearCanvas(fabricCanvas) {
@@ -356,35 +309,3 @@ export function canvasToImageBytes(fabricCanvas) {
   return fabricCanvas.toDataURL({ format: 'png', multiplier: 2 });
 }
 
-// Render fabricJson to a transparent PNG for embedding into the final PDF.
-// Creates a temporary off-screen Fabric canvas, loads the JSON, renders, and returns a data URL.
-export async function renderFabricJsonToPng(fabricJson) {
-  const parsed = typeof fabricJson === 'string' ? JSON.parse(fabricJson) : fabricJson;
-  const width = parsed._canvasWidth || 800;
-  const height = parsed._canvasHeight || 1000;
-
-  // Fabric.js requires a DOM-attached canvas for proper initialization
-  const wrapper = document.createElement('div');
-  wrapper.style.cssText = 'position:fixed;left:-9999px;top:-9999px;pointer-events:none;';
-  const tempCanvasEl = document.createElement('canvas');
-  wrapper.appendChild(tempCanvasEl);
-  document.body.appendChild(wrapper);
-
-  try {
-    const fc = new Canvas(tempCanvasEl, { width, height });
-    fc.backgroundColor = '';
-
-    await new Promise((resolve) => {
-      fc.loadFromJSON(parsed, () => {
-        fc.renderAll();
-        resolve();
-      });
-    });
-
-    const dataUrl = fc.toDataURL({ format: 'png' });
-    fc.dispose();
-    return dataUrl;
-  } finally {
-    wrapper.remove();
-  }
-}

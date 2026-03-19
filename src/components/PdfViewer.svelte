@@ -3,11 +3,12 @@
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
   import { loadPdfDocument, renderPage, getPageTextContent } from '../lib/pdfRenderer.js';
+  import { editTextInPdf } from '../lib/pdfEngine.js';
   import {
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
     serializeCanvas, deserializeCanvas, clearCanvas,
-    createEditableText, findTextAtPosition, setPdfBackground
+    findTextAtPosition
   } from '../lib/fabricManager.js';
 
   let store = $derived($pdfStore);
@@ -15,11 +16,18 @@
 
   // DOM refs
   let containerEl = $state(null);
+  let canvasEl = $state(null);
   let fabricCanvasEl = $state(null);
+  let editorRef = $state(null);
 
   // Template-bound state
   let pageWidth = $state(0);
   let pageHeight = $state(0);
+
+  // Inline text editor state
+  let editingItem = $state(null);
+  let editValue = $state('');
+  let isApplying = $state(false);
 
   // Internal tracking (non-reactive)
   let pdfDoc = null;
@@ -28,8 +36,6 @@
   let loadedBytesId = 0;
   let renderVer = 0;
   let pageTextItems = [];
-  // Off-screen canvas for PDF rendering (used as Fabric background)
-  let pdfRenderCanvas = document.createElement('canvas');
 
   // Single unified effect
   $effect(() => {
@@ -37,18 +43,25 @@
     const page = store.currentPage;
     const zoom = store.zoom;
     const pages = store.pages;
-    const el = fabricCanvasEl;
+    const canvas = canvasEl;
 
-    if (bytes && el && page > 0) {
-      handleRender(bytes, page, zoom, pages, el);
+    if (bytes && canvas && page > 0) {
+      handleRender(bytes, page, zoom, pages, canvas);
     }
   });
 
-  async function handleRender(bytes, page, zoom, pages, el) {
+  // Auto-focus editor when it appears
+  $effect(() => {
+    if (editorRef && editingItem) {
+      editorRef.focus();
+      editorRef.select();
+    }
+  });
+
+  async function handleRender(bytes, page, zoom, pages, canvas) {
     const ver = ++renderVer;
 
-    // Load document if bytes changed
-    const bytesId = bytes.length + bytes[0] + bytes[bytes.length - 1];
+    const bytesId = bytes.length * 31 + bytes[0] * 17 + bytes[bytes.length - 1];
     if (bytesId !== loadedBytesId) {
       loadedBytesId = bytesId;
       try {
@@ -80,17 +93,16 @@
 
     try {
       if (actualPageNum > 0 && actualPageNum <= pdfDoc.numPages) {
-        // Render PDF to off-screen canvas
-        const dims = await renderPage(pdfDoc, actualPageNum, pdfRenderCanvas, zoom * 1.5, rotation);
+        const dims = await renderPage(pdfDoc, actualPageNum, canvas, zoom * 1.5, rotation);
         if (!dims || ver !== renderVer) return;
         w = dims.width;
         h = dims.height;
       } else if (pageInfo.isBlank) {
         w = (pageInfo.blankWidth || 595) * zoom * 1.5;
         h = (pageInfo.blankHeight || 842) * zoom * 1.5;
-        pdfRenderCanvas.width = w;
-        pdfRenderCanvas.height = h;
-        const ctx = pdfRenderCanvas.getContext('2d');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
       }
@@ -108,33 +120,21 @@
     await tick();
     if (ver !== renderVer) return;
 
-    await setupFabricOverlay(w, h, pageInfo);
-    if (ver !== renderVer) return;
+    setupFabricOverlay(w, h, pageInfo);
 
     // Load text positions for click-to-edit
     pageTextItems = [];
     if (actualPageNum > 0 && pdfDoc) {
       try {
-        const textItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
+        pageTextItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
         if (ver !== renderVer) return;
-        if (pageInfo.fabricJson && fabricCanvas) {
-          const existing = fabricCanvas.getObjects().filter(o => o.customType === 'pdf-text');
-          pageTextItems = textItems.filter(item => {
-            const top = item.y - item.fontSize * 0.82;
-            return !existing.some(ft =>
-              Math.abs(ft.left - item.x) < 5 && Math.abs(ft.top - top) < 5
-            );
-          });
-        } else {
-          pageTextItems = textItems;
-        }
       } catch (err) {
         console.warn('Text layer error:', err.message);
       }
     }
   }
 
-  async function setupFabricOverlay(w, h, pageInfo) {
+  function setupFabricOverlay(w, h, pageInfo) {
     if (!fabricCanvasEl || w <= 0 || h <= 0) return;
 
     if (!fabricCanvas) {
@@ -144,25 +144,18 @@
       fabricCanvas.off('selection:updated');
       fabricCanvas.off('selection:cleared');
       fabricCanvas.off('object:modified');
-      fabricCanvas.backgroundImage = null;
       fabricCanvas.clear();
       fabricCanvas.setDimensions({ width: w, height: h });
     }
 
-    // Selection events
     fabricCanvas.on('selection:created', handleFabricSelection);
     fabricCanvas.on('selection:updated', handleFabricSelection);
     fabricCanvas.on('selection:cleared', () => toolStore.clearSelectedText());
     fabricCanvas.on('object:modified', handleFabricSelection);
 
-    // Restore saved annotations
     if (pageInfo.fabricJson) {
-      await deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
+      deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
     }
-
-    // Set the PDF render as background image AFTER deserialize
-    // (deserialize clears everything including background)
-    setPdfBackground(fabricCanvas, pdfRenderCanvas);
 
     setupFabricTool();
   }
@@ -212,7 +205,6 @@
 
   function setupFabricTool() {
     if (!fabricCanvas) return;
-
     setDrawingMode(fabricCanvas, false);
     fabricCanvas.selection = true;
 
@@ -228,7 +220,9 @@
 
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
+    if (editingItem || isApplying) return;
 
+    // Don't add objects when clicking on existing Fabric object
     const activeObj = fabricCanvas.getActiveObject();
     if (activeObj) return;
 
@@ -239,10 +233,11 @@
     switch (tools.activeTool) {
       case 'select':
       case 'text-edit': {
+        // Click-to-edit: show inline HTML editor over the text
         const hit = findTextAtPosition(pageTextItems, x, y);
         if (hit) {
-          createEditableText(fabricCanvas, hit);
-          pageTextItems = pageTextItems.filter(t => t !== hit);
+          editingItem = hit;
+          editValue = hit.text;
         }
         break;
       }
@@ -267,7 +262,61 @@
     }
   }
 
+  function handleEditKeydown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyTextEdit();
+    } else if (e.key === 'Escape') {
+      editingItem = null;
+      editValue = '';
+    }
+  }
+
+  async function applyTextEdit() {
+    if (!editingItem || isApplying) return;
+
+    // If text didn't change, just close
+    if (editValue === editingItem.text) {
+      editingItem = null;
+      editValue = '';
+      return;
+    }
+
+    isApplying = true;
+
+    try {
+      const zoom = store.zoom;
+      const scale = zoom * 1.5;
+      const pageIndex = store.pages[store.currentPage - 1].pageNum - 1;
+
+      // Modify the PDF directly using pdf-lib
+      const newBytes = await editTextInPdf(store.pdfBytes, pageIndex, {
+        x: editingItem.x,
+        y: editingItem.y,
+        fontSize: editingItem.fontSize,
+        fontName: editingItem.fontName,
+        originalText: editingItem.text,
+        newText: editValue,
+        scale,
+      });
+
+      // Force document reload on next render
+      loadedBytesId = 0;
+
+      // Update store → triggers re-render with the ACTUAL modified PDF
+      pdfStore.updatePdfBytes(newBytes);
+    } catch (err) {
+      console.error('Text edit failed:', err);
+      alert('Error editing text: ' + err.message);
+    }
+
+    editingItem = null;
+    editValue = '';
+    isApplying = false;
+  }
+
   function handleKeyDown(e) {
+    if (editingItem) return; // Don't interfere with editor
     if (!fabricCanvas) return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = fabricCanvas.getActiveObject();
@@ -306,11 +355,30 @@
     </div>
   {:else if store.pdfBytes}
     <div class="page-wrapper" style="width: {pageWidth}px; height: {pageHeight}px;">
+      <canvas bind:this={canvasEl} class="pdf-canvas"></canvas>
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="fabric-wrapper" onclick={handleCanvasClick}>
         <canvas bind:this={fabricCanvasEl}></canvas>
       </div>
+
+      {#if editingItem}
+        <input
+          bind:this={editorRef}
+          type="text"
+          class="inline-text-editor"
+          style="
+            left: {editingItem.x}px;
+            top: {editingItem.y - editingItem.fontSize * 0.95}px;
+            font-size: {editingItem.fontSize}px;
+            height: {editingItem.fontSize * 1.3}px;
+            min-width: {Math.max(editingItem.width || editingItem.text.length * editingItem.fontSize * 0.6, editingItem.fontSize * 3)}px;
+          "
+          bind:value={editValue}
+          onkeydown={handleEditKeydown}
+          onblur={applyTextEdit}
+        />
+      {/if}
     </div>
   {/if}
 </div>
@@ -332,10 +400,30 @@
     background: white;
   }
 
+  .pdf-canvas {
+    display: block;
+  }
+
   .fabric-wrapper {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     pointer-events: auto;
+  }
+
+  .inline-text-editor {
+    position: absolute;
+    border: 2px solid var(--accent, #3b82f6);
+    background: rgba(255, 255, 255, 0.95);
+    padding: 0 3px;
+    outline: none;
+    box-sizing: border-box;
+    z-index: 100;
+    font-family: Helvetica, Arial, sans-serif;
+    color: #000;
+    line-height: 1.2;
   }
 
   .viewer-loading, .viewer-error {

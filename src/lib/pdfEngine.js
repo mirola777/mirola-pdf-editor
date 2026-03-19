@@ -235,99 +235,70 @@ export async function flattenForm(pdfBytes) {
   return await doc.save();
 }
 
-// Write Fabric text edits directly into the PDF using pdf-lib.
-// For each text object: draw a white rectangle to cover the original, then draw the new text.
-// This produces real PDF text (selectable, searchable) — no image layers.
-export async function flattenAnnotationsIntoPdf(pdfBytes, pageAnnotations) {
+// Edit text directly in the PDF. Draws a white rect over the original text,
+// then writes the new text as real PDF text. Returns new PDF bytes.
+export async function editTextInPdf(pdfBytes, pageIndex, edit) {
   const doc = await PDFDocument.load(pdfBytes);
   const pages = doc.getPages();
+  if (pageIndex < 0 || pageIndex >= pages.length) return pdfBytes;
 
-  // Font cache to avoid re-embedding
-  const fontCache = {};
-  async function getFont(family, weight, style) {
-    const stdFont = mapToStandardFont(family, weight, style);
-    if (!fontCache[stdFont]) {
-      fontCache[stdFont] = await doc.embedFont(stdFont);
-    }
-    return fontCache[stdFont];
-  }
+  const page = pages[pageIndex];
+  const { height: pageH } = page.getSize();
 
-  for (const { pageIndex, fabricJson } of pageAnnotations) {
-    if (pageIndex < 0 || pageIndex >= pages.length) continue;
-    const page = pages[pageIndex];
-    const { width: pageW, height: pageH } = page.getSize();
+  // Convert canvas coordinates → PDF coordinates
+  const scale = edit.scale; // zoom * 1.5
+  const pdfX = edit.x / scale;
+  const pdfY = pageH - edit.y / scale; // canvas Y (top-down) → PDF Y (bottom-up)
+  const pdfFontSize = edit.fontSize / scale;
 
-    const parsed = typeof fabricJson === 'string' ? JSON.parse(fabricJson) : fabricJson;
-    const canvasW = parsed._canvasWidth || pageW * 1.5;
-    const canvasH = parsed._canvasHeight || pageH * 1.5;
-    const scale = canvasW / pageW; // uniform scale (canvasH / pageH should be the same)
+  // Determine font from PDF font name
+  const { family, weight, style } = parsePdfFontName(edit.fontName);
+  const stdFont = mapToStandardFont(family, weight, style);
+  const font = await doc.embedFont(stdFont);
 
-    for (const obj of parsed.objects || []) {
-      if (obj.type !== 'i-text') continue;
-      if (!obj.text || !obj.text.trim()) continue;
+  // Calculate widths for the cover rectangle
+  const origWidth = font.widthOfTextAtSize(edit.originalText, pdfFontSize);
+  const newWidth = edit.newText ? font.widthOfTextAtSize(edit.newText, pdfFontSize) : 0;
+  const coverWidth = Math.max(origWidth, newWidth);
 
-      const pdfFontSize = obj.fontSize / scale;
-      const pdfX = obj.left / scale;
-      // Fabric top is the top of the text box; baseline is ~82% below top
-      const fabricBaseline = obj.top + obj.fontSize * 0.82;
-      // PDF Y: origin at bottom-left, so invert
-      const pdfBaselineY = pageH - fabricBaseline / scale;
+  // White rectangle to cover original text
+  const pad = 3;
+  page.drawRectangle({
+    x: pdfX - pad,
+    y: pdfY - pdfFontSize * 0.35 - pad,
+    width: coverWidth + pad * 2,
+    height: pdfFontSize * 1.5 + pad * 2,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
 
-      const font = await getFont(
-        obj.fontFamily || 'Helvetica',
-        obj.fontWeight || 'normal',
-        obj.fontStyle || 'normal',
-      );
-
-      const color = obj.fill ? hexToRgb(obj.fill) : rgb(0, 0, 0);
-
-      // Handle multiline text
-      const lines = obj.text.split('\n');
-      const lineHeight = pdfFontSize * 1.2;
-
-      // Calculate max line width for the white cover rectangle
-      let maxWidth = 0;
-      for (const line of lines) {
-        if (line.length > 0) {
-          const w = font.widthOfTextAtSize(line, pdfFontSize);
-          if (w > maxWidth) maxWidth = w;
-        }
-      }
-
-      // Draw white rectangle to cover original text
-      const pad = 2;
-      const rectHeight = lines.length * lineHeight + pad * 2;
-      const rectY = pdfBaselineY - (lines.length - 1) * lineHeight - pdfFontSize * 0.3 - pad;
-      page.drawRectangle({
-        x: pdfX - pad,
-        y: rectY,
-        width: maxWidth + pad * 2,
-        height: rectHeight,
-        color: rgb(1, 1, 1),
-        borderWidth: 0,
-      });
-
-      // Draw each line of text
-      let lineY = pdfBaselineY;
-      for (const line of lines) {
-        if (line.length > 0) {
-          page.drawText(line, {
-            x: pdfX,
-            y: lineY,
-            size: pdfFontSize,
-            font,
-            color,
-          });
-        }
-        lineY -= lineHeight;
-      }
-    }
+  // Draw new text
+  if (edit.newText && edit.newText.trim()) {
+    page.drawText(edit.newText, {
+      x: pdfX,
+      y: pdfY,
+      size: pdfFontSize,
+      font,
+      color: rgb(0, 0, 0),
+    });
   }
 
   return await doc.save();
 }
 
-// Map Fabric font families to pdf-lib StandardFonts
+function parsePdfFontName(fontName) {
+  if (!fontName) return { family: 'Helvetica', weight: 'normal', style: 'normal' };
+  const lower = fontName.toLowerCase();
+  const weight = lower.includes('bold') ? 'bold' : 'normal';
+  const style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
+  let family = 'Helvetica';
+  if (lower.includes('times')) family = 'Times New Roman';
+  else if (lower.includes('courier') || lower.includes('mono')) family = 'Courier New';
+  else if (lower.includes('arial')) family = 'Arial';
+  return { family, weight, style };
+}
+
+// Map font families to pdf-lib StandardFonts
 function mapToStandardFont(family, weight, style) {
   const isBold = weight === 'bold';
   const isItalic = style === 'italic';
