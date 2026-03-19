@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
   import { loadPdfDocument, renderPage } from '../lib/pdfRenderer.js';
@@ -11,85 +12,73 @@
   let store = $derived($pdfStore);
   let tools = $derived($toolStore);
 
+  // DOM refs (must be $state for bind:this)
   let containerEl = $state(null);
   let canvasEl = $state(null);
   let fabricCanvasEl = $state(null);
-  let pdfDoc = $state(null);
-  let fabricCanvas = $state(null);
-  let currentRenderedPage = $state(0);
+
+  // Template-bound state (must be $state for DOM reactivity)
   let pageWidth = $state(0);
   let pageHeight = $state(0);
-  let lastBytesId = $state(0);
 
-  // Version counter to cancel stale async renders
-  let renderVersion = 0;
-  let loadVersion = 0;
+  // Internal tracking (non-reactive to avoid state-in-effect issues)
+  let pdfDoc = null;
+  let fabricCanvas = null;
+  let currentRenderedPage = 0;
+  let loadedBytesId = 0;
+  let renderVer = 0;
 
-  // Load PDF document when bytes change
+  // Single unified effect: watches ALL render-relevant dependencies
   $effect(() => {
     const bytes = store.pdfBytes;
-    if (bytes) {
-      const id = bytes.length + bytes[0] + bytes[bytes.length - 1];
-      if (id !== lastBytesId) {
-        lastBytesId = id;
-        loadDocument(bytes);
-      }
-    }
-  });
-
-  async function loadDocument(bytes) {
-    const myVersion = ++loadVersion;
-    try {
-      const doc = await loadPdfDocument(bytes);
-      // Bail if a newer load started while we were loading
-      if (myVersion !== loadVersion) return;
-      pdfDoc = doc;
-      currentRenderedPage = 0;
-    } catch (err) {
-      if (myVersion !== loadVersion) return;
-      pdfStore.setError('Failed to load PDF: ' + err.message);
-    }
-  }
-
-  // Render current page when dependencies change
-  $effect(() => {
     const page = store.currentPage;
     const zoom = store.zoom;
     const pages = store.pages;
-    const doc = pdfDoc;
     const canvas = canvasEl;
 
-    if (doc && canvas && page > 0) {
-      doRender(doc, page, zoom, pages, canvas);
+    if (bytes && canvas && page > 0) {
+      handleRender(bytes, page, zoom, pages, canvas);
     }
   });
 
-  async function doRender(doc, pageNum, zoom, pages, canvas) {
-    const myVersion = ++renderVersion;
+  async function handleRender(bytes, page, zoom, pages, canvas) {
+    const ver = ++renderVer;
 
-    // Save current fabric state before switching pages
-    if (fabricCanvas && currentRenderedPage > 0 && currentRenderedPage !== pageNum) {
+    // Load document if bytes changed
+    const bytesId = bytes.length + bytes[0] + bytes[bytes.length - 1];
+    if (bytesId !== loadedBytesId) {
+      loadedBytesId = bytesId;
+      try {
+        pdfDoc = await loadPdfDocument(bytes);
+      } catch (err) {
+        pdfStore.setError('Failed to load PDF: ' + err.message);
+        return;
+      }
+      if (ver !== renderVer) return;
+      currentRenderedPage = 0;
+    }
+
+    if (!pdfDoc) return;
+
+    // Save fabric state before switching pages
+    if (fabricCanvas && currentRenderedPage > 0 && currentRenderedPage !== page) {
       try {
         const json = serializeCanvas(fabricCanvas);
         pdfStore.updatePageFabric(currentRenderedPage - 1, json);
-      } catch { /* ignore serialization errors during page switch */ }
+      } catch { /* ignore */ }
     }
 
-    const pageInfo = pages[pageNum - 1];
+    const pageInfo = pages[page - 1];
     if (!pageInfo || pageInfo.deleted) return;
 
     const rotation = pageInfo.rotation || 0;
     const actualPageNum = pageInfo.isBlank ? -1 : pageInfo.pageNum;
-
     let w = 0, h = 0;
 
     try {
-      if (actualPageNum > 0 && actualPageNum <= doc.numPages) {
-        const dims = await renderPage(doc, actualPageNum, canvas, zoom * 1.5, rotation);
-        // renderPage returns null if cancelled
-        if (!dims) return;
-        // Bail if a newer render started
-        if (myVersion !== renderVersion) return;
+      if (actualPageNum > 0 && actualPageNum <= pdfDoc.numPages) {
+        const dims = await renderPage(pdfDoc, actualPageNum, canvas, zoom * 1.5, rotation);
+        if (!dims || ver !== renderVer) return;
         w = dims.width;
         h = dims.height;
       } else if (pageInfo.isBlank) {
@@ -102,35 +91,47 @@
         ctx.fillRect(0, 0, w, h);
       }
     } catch (err) {
-      console.warn('Render error (will retry on next trigger):', err.message);
+      console.warn('PDF render error:', err.message);
       return;
     }
 
-    // Final bail check after all async work
-    if (myVersion !== renderVersion) return;
+    if (ver !== renderVer || w === 0) return;
 
     pageWidth = w;
     pageHeight = h;
-    currentRenderedPage = pageNum;
+    currentRenderedPage = page;
 
-    // Setup fabric canvas overlay
-    if (fabricCanvasEl && w > 0 && h > 0) {
-      if (fabricCanvas) {
-        try { fabricCanvas.dispose(); } catch { /* ok */ }
-      }
-      fabricCanvas = createFabricCanvas(fabricCanvasEl, w, h);
+    // Wait for DOM to update with new dimensions before touching Fabric
+    await tick();
+    if (ver !== renderVer) return;
 
-      // Restore saved fabric state
-      if (pageInfo.fabricJson) {
-        deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
-      }
-
-      setupFabricTool();
-    }
+    setupFabricOverlay(w, h, pageInfo);
   }
 
+  function setupFabricOverlay(w, h, pageInfo) {
+    if (!fabricCanvasEl || w <= 0 || h <= 0) return;
+
+    if (!fabricCanvas) {
+      // First time: create Fabric canvas
+      fabricCanvas = createFabricCanvas(fabricCanvasEl, w, h);
+    } else {
+      // Subsequent: clear and resize (avoid dispose/recreate which corrupts DOM)
+      fabricCanvas.clear();
+      fabricCanvas.setDimensions({ width: w, height: h });
+    }
+
+    // Restore saved annotations for this page
+    if (pageInfo.fabricJson) {
+      deserializeCanvas(fabricCanvas, pageInfo.fabricJson);
+    }
+
+    setupFabricTool();
+  }
+
+  // React to tool changes
   $effect(() => {
-    if (fabricCanvas && tools.activeTool) {
+    const tool = tools.activeTool;
+    if (fabricCanvas && tool) {
       setupFabricTool();
     }
   });
@@ -148,8 +149,6 @@
       case 'select':
         fabricCanvas.selection = true;
         break;
-      default:
-        break;
     }
   }
 
@@ -162,31 +161,20 @@
 
     switch (tools.activeTool) {
       case 'text-add':
-        addTextBox(fabricCanvas, {
-          x, y,
-          ...tools.textSettings,
-        });
+        addTextBox(fabricCanvas, { x, y, ...tools.textSettings });
         break;
-
       case 'highlight':
         addHighlight(fabricCanvas, x, y, 150, 20, tools.highlightColor);
         break;
-
       case 'shapes':
-        addShape(fabricCanvas, tools.shapeSettings.type, {
-          x, y,
-          ...tools.shapeSettings,
-        });
+        addShape(fabricCanvas, tools.shapeSettings.type, { x, y, ...tools.shapeSettings });
         break;
-
       case 'note':
         addStickyNote(fabricCanvas, x, y);
         break;
-
       case 'stamp':
         addStamp(fabricCanvas, tools.stampType, x, y);
         break;
-
       case 'eraser':
         deleteSelected(fabricCanvas);
         break;
@@ -269,6 +257,7 @@
     left: 0;
     width: 100%;
     height: 100%;
+    pointer-events: auto;
   }
 
   .viewer-loading, .viewer-error {

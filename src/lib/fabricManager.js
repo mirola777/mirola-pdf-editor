@@ -6,8 +6,10 @@ export function createFabricCanvas(canvasElement, width, height) {
     height,
     selection: true,
     preserveObjectStacking: true,
-    backgroundColor: 'transparent',
   });
+  // Explicitly ensure no background (don't use 'transparent' which Fabric may render as white)
+  fabricCanvas.backgroundColor = '';
+  fabricCanvas.renderAll();
   return fabricCanvas;
 }
 
