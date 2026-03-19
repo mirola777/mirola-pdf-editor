@@ -144,7 +144,37 @@
     }
   }
 
-  // Paint stored edits directly on the PDF canvas (white rect + new text)
+  // Sample the background color near a text position (picks the lightest nearby pixel)
+  function sampleBgColor(ctx, x, y, fontSize, textWidth) {
+    const cw = ctx.canvas.width;
+    const ch = ctx.canvas.height;
+    const points = [
+      [x + textWidth + 3, y - fontSize * 0.4],  // right of text
+      [x - 3, y - fontSize * 0.4],               // left of text
+      [x + 5, y - fontSize - 2],                  // above text
+      [x + 5, y + 3],                             // below text
+    ];
+
+    let best = { r: 255, g: 255, b: 255 };
+    let maxBrightness = 0;
+
+    for (const [px, py] of points) {
+      const sx = Math.max(0, Math.min(Math.round(px), cw - 1));
+      const sy = Math.max(0, Math.min(Math.round(py), ch - 1));
+      try {
+        const pixel = ctx.getImageData(sx, sy, 1, 1).data;
+        const brightness = pixel[0] + pixel[1] + pixel[2];
+        if (brightness > maxBrightness) {
+          maxBrightness = brightness;
+          best = { r: pixel[0], g: pixel[1], b: pixel[2] };
+        }
+      } catch { /* cross-origin or edge, default white */ }
+    }
+
+    return best;
+  }
+
+  // Paint stored edits directly on the PDF canvas (bg-matched rect + new text)
   function paintEditsOnCanvas(canvas, edits, scale, canvasHeight) {
     if (!edits || !edits.length) return;
     const ctx = canvas.getContext('2d');
@@ -162,9 +192,10 @@
       const newWidth = edit.newText ? ctx.measureText(edit.newText).width : 0;
       const coverWidth = Math.max(origWidth, newWidth);
 
-      // White rect to cover original text
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(cx - 2, cy - cFontSize * 0.85, coverWidth + 6, cFontSize * 1.15);
+      // Sample background color to blend seamlessly
+      const bg = sampleBgColor(ctx, cx, cy, cFontSize, coverWidth);
+      ctx.fillStyle = `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
+      ctx.fillRect(cx, cy - cFontSize * 0.82, coverWidth + 2, cFontSize);
 
       // Draw new text
       if (edit.newText && edit.newText.trim()) {
@@ -288,6 +319,18 @@
     const { fontFamily, fontWeight, fontStyle } = parsePdfFont(hit.fontName);
     const textW = hit.width || hit.text.length * hit.fontSize * 0.55;
 
+    // Sample bg color BEFORE painting over the text
+    let bgColor = '#ffffff';
+    if (canvasEl) {
+      const ctx = canvasEl.getContext('2d');
+      const bg = sampleBgColor(ctx, hit.x, hit.y, hit.fontSize, textW);
+      bgColor = `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
+      // Store bg color on the hit for applyTextEdit
+      hit._bgR = bg.r / 255;
+      hit._bgG = bg.g / 255;
+      hit._bgB = bg.b / 255;
+    }
+
     editStyle = {
       left: hit.x - 1,
       top: hit.y - hit.fontSize * 0.9,
@@ -297,17 +340,18 @@
       fontFamily,
       fontWeight,
       fontStyle,
+      bgColor,
     };
 
-    // Paint white on the PDF canvas to hide original/current text instantly
+    // Paint bg-matched rect to hide original/current text instantly
     if (canvasEl) {
       const ctx = canvasEl.getContext('2d');
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = bgColor;
       ctx.fillRect(
-        hit.x - 2,
-        hit.y - hit.fontSize * 0.9,
-        textW + 6,
-        hit.fontSize * 1.15
+        hit.x,
+        hit.y - hit.fontSize * 0.82,
+        textW + 2,
+        hit.fontSize
       );
     }
 
@@ -398,7 +442,7 @@
     // The "original text" is the text from the original PDF (before any edits)
     const originalText = editingItem._originalText || currentText;
 
-    // Store the edit (no PDF bytes change!)
+    // Store the edit with background color (no PDF bytes change!)
     pdfStore.addPageEdit(store.currentPage, {
       pdfX,
       pdfY,
@@ -406,6 +450,9 @@
       fontName: editingItem.fontName,
       originalText,
       newText,
+      bgR: editingItem._bgR ?? 1,
+      bgG: editingItem._bgG ?? 1,
+      bgB: editingItem._bgB ?? 1,
     });
 
     // Paint the edit directly on the canvas (white rect is already there)
@@ -500,6 +547,7 @@
             font-family: {editStyle.fontFamily}, Helvetica, Arial, sans-serif;
             font-weight: {editStyle.fontWeight};
             font-style: {editStyle.fontStyle};
+            background: {editStyle.bgColor || '#ffffff'};
           "
           onkeydown={handleEditKeydown}
           onblur={applyTextEdit}

@@ -265,13 +265,18 @@ export async function applyAllEdits(pdfBytes, allPageEdits) {
       const newWidth = edit.newText ? font.widthOfTextAtSize(edit.newText, edit.pdfFontSize) : 0;
       const coverWidth = Math.max(origWidth, newWidth);
 
-      // White rectangle to cover original text
+      // Background-matched rectangle to cover original text
+      const bgColor = rgb(
+        edit.bgR ?? 1,
+        edit.bgG ?? 1,
+        edit.bgB ?? 1,
+      );
       page.drawRectangle({
-        x: edit.pdfX - 1,
-        y: edit.pdfY - edit.pdfFontSize * 0.25,
-        width: coverWidth + 2,
-        height: edit.pdfFontSize * 1.2,
-        color: rgb(1, 1, 1),
+        x: edit.pdfX,
+        y: edit.pdfY - edit.pdfFontSize * 0.2,
+        width: coverWidth + 1,
+        height: edit.pdfFontSize * 1.05,
+        color: bgColor,
         borderWidth: 0,
       });
 
