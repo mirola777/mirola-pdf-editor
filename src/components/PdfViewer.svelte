@@ -236,6 +236,14 @@
         // Click-to-edit: show inline HTML editor over the text
         const hit = findTextAtPosition(pageTextItems, x, y);
         if (hit) {
+          // Paint white on the PDF canvas immediately to hide original text
+          if (canvasEl) {
+            const ctx = canvasEl.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            const top = hit.y - hit.fontSize;
+            const w = hit.width || hit.text.length * hit.fontSize * 0.6;
+            ctx.fillRect(hit.x - 1, top, w + 2, hit.fontSize * 1.3);
+          }
           editingItem = hit;
           editValue = hit.text;
         }
@@ -267,18 +275,25 @@
       e.preventDefault();
       applyTextEdit();
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       editingItem = null;
       editValue = '';
+      // Re-render page to restore the text we painted over
+      loadedBytesId = 0;
+      pdfStore.updatePdfBytes(store.pdfBytes);
     }
   }
 
   async function applyTextEdit() {
     if (!editingItem || isApplying) return;
 
-    // If text didn't change, just close
+    // If text didn't change, just close and restore painted area
     if (editValue === editingItem.text) {
       editingItem = null;
       editValue = '';
+      // Re-render to restore the text we painted white over
+      loadedBytesId = 0;
+      pdfStore.updatePdfBytes(store.pdfBytes);
       return;
     }
 
@@ -363,16 +378,21 @@
       </div>
 
       {#if editingItem}
+        {@const inputW = Math.min(
+          Math.max(editingItem.width || editingItem.text.length * editingItem.fontSize * 0.55, editingItem.fontSize * 4),
+          pageWidth - editingItem.x - 4
+        )}
         <input
           bind:this={editorRef}
           type="text"
           class="inline-text-editor"
           style="
-            left: {editingItem.x}px;
-            top: {editingItem.y - editingItem.fontSize * 0.95}px;
-            font-size: {editingItem.fontSize}px;
-            height: {editingItem.fontSize * 1.3}px;
-            min-width: {Math.max(editingItem.width || editingItem.text.length * editingItem.fontSize * 0.6, editingItem.fontSize * 3)}px;
+            left: {editingItem.x - 2}px;
+            top: {editingItem.y - editingItem.fontSize}px;
+            font-size: {Math.round(editingItem.fontSize * 0.85)}px;
+            height: {editingItem.fontSize * 1.2}px;
+            width: {inputW}px;
+            max-width: {pageWidth - editingItem.x - 4}px;
           "
           bind:value={editValue}
           onkeydown={handleEditKeydown}

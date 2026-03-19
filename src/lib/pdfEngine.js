@@ -261,13 +261,12 @@ export async function editTextInPdf(pdfBytes, pageIndex, edit) {
   const newWidth = edit.newText ? font.widthOfTextAtSize(edit.newText, pdfFontSize) : 0;
   const coverWidth = Math.max(origWidth, newWidth);
 
-  // White rectangle to cover original text
-  const pad = 3;
+  // White rectangle to cover original text — tight fit, minimal padding
   page.drawRectangle({
-    x: pdfX - pad,
-    y: pdfY - pdfFontSize * 0.35 - pad,
-    width: coverWidth + pad * 2,
-    height: pdfFontSize * 1.5 + pad * 2,
+    x: pdfX - 1,
+    y: pdfY - pdfFontSize * 0.25,
+    width: coverWidth + 2,
+    height: pdfFontSize * 1.2,
     color: rgb(1, 1, 1),
     borderWidth: 0,
   });
