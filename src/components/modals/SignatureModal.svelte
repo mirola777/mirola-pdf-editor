@@ -5,10 +5,10 @@
   let tr = $derived($t);
 
   let mode = $state('draw');
-  let canvasEl;
+  let canvasEl = $state(null);
   let isDrawing = $state(false);
   let ctx;
-  let fileInput;
+  let fileInput = $state(null);
 
   $effect(() => {
     if (canvasEl && mode === 'draw') {

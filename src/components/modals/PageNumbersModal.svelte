@@ -21,8 +21,8 @@
   async function apply() {
     isProcessing = true;
     try {
-      const store = $pdfStore;
-      const bytes = await addPageNumbers(store.pdfBytes, { position, format, startNumber, fontSize, color });
+      const currentStore = $pdfStore;
+      const bytes = await addPageNumbers(currentStore.pdfBytes, { position, format, startNumber, fontSize, color });
       pdfStore.updatePdfBytes(bytes);
       pdfStore.setModified(true);
       onClose();

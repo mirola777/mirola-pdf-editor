@@ -12,14 +12,16 @@
 
   async function compress() {
     isProcessing = true;
+    const pdfBytes = store.pdfBytes;
+    const fileSize = store.fileSize;
     try {
-      const doc = await loadPdfLib(store.pdfBytes);
+      const doc = await loadPdfLib(pdfBytes);
       const bytes = await doc.save({
         useObjectStreams: true,
         addDefaultPage: false,
       });
       result = {
-        originalSize: store.fileSize,
+        originalSize: fileSize,
         newSize: bytes.length,
         bytes,
       };

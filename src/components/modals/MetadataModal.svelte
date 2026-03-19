@@ -7,16 +7,27 @@
   let tr = $derived($t);
   let store = $derived($pdfStore);
 
-  let title = $state(store.metadata.title);
-  let author = $state(store.metadata.author);
-  let subject = $state(store.metadata.subject);
-  let keywords = $state(store.metadata.keywords);
+  let title = $state(store.metadata?.title || '');
+  let author = $state(store.metadata?.author || '');
+  let subject = $state(store.metadata?.subject || '');
+  let keywords = $state(store.metadata?.keywords || '');
   let isProcessing = $state(false);
+
+  $effect(() => {
+    const meta = store.metadata;
+    if (meta) {
+      title = meta.title || '';
+      author = meta.author || '';
+      subject = meta.subject || '';
+      keywords = meta.keywords || '';
+    }
+  });
 
   async function save() {
     isProcessing = true;
+    const pdfBytes = store.pdfBytes;
     try {
-      const doc = await loadPdfLib(store.pdfBytes);
+      const doc = await loadPdfLib(pdfBytes);
       await setMetadata(doc, { title, author, subject, keywords });
       const bytes = await savePdf(doc);
       pdfStore.updatePdfBytes(bytes);

@@ -1,4 +1,4 @@
-import { Canvas, IText, Rect, Circle, Line, Path, FabricImage, Group, Polygon } from 'fabric';
+import { Canvas, IText, Rect, Circle, Line, FabricImage, Group, Polygon } from 'fabric';
 
 export function createFabricCanvas(canvasElement, width, height) {
   const fabricCanvas = new Canvas(canvasElement, {
@@ -16,7 +16,6 @@ export function setDrawingMode(fabricCanvas, enabled, options = {}) {
   if (enabled) {
     fabricCanvas.freeDrawingBrush.color = options.color || '#ff0000';
     fabricCanvas.freeDrawingBrush.width = options.width || 2;
-    fabricCanvas.freeDrawingBrush.opacity = options.opacity || 1;
   }
 }
 

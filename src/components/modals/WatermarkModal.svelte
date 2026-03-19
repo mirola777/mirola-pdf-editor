@@ -16,8 +16,8 @@
   async function apply() {
     isProcessing = true;
     try {
-      const store = $pdfStore;
-      const bytes = await addWatermark(store.pdfBytes, text, { opacity, angle, fontSize, color });
+      const currentStore = $pdfStore;
+      const bytes = await addWatermark(currentStore.pdfBytes, text, { opacity, angle, fontSize, color });
       pdfStore.updatePdfBytes(bytes);
       pdfStore.setModified(true);
       onClose();

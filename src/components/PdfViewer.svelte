@@ -11,84 +11,93 @@
   let store = $derived($pdfStore);
   let tools = $derived($toolStore);
 
-  let containerEl;
-  let canvasEl;
-  let fabricCanvasEl;
+  let containerEl = $state(null);
+  let canvasEl = $state(null);
+  let fabricCanvasEl = $state(null);
   let pdfDoc = $state(null);
   let fabricCanvas = $state(null);
   let currentRenderedPage = $state(0);
   let pageWidth = $state(0);
   let pageHeight = $state(0);
+  let lastBytesId = $state(0);
+  let renderToken = $state(0);
 
   $effect(() => {
-    if (store.pdfBytes && store.pdfBytes !== lastPdfBytes) {
-      lastPdfBytes = store.pdfBytes;
-      loadDocument(store.pdfBytes);
+    const bytes = store.pdfBytes;
+    if (bytes) {
+      const id = bytes.length + bytes[0] + bytes[bytes.length - 1];
+      if (id !== lastBytesId) {
+        lastBytesId = id;
+        loadDocument(bytes);
+      }
     }
   });
-
-  let lastPdfBytes = null;
 
   async function loadDocument(bytes) {
     try {
       pdfDoc = await loadPdfDocument(bytes);
+      currentRenderedPage = 0;
+      renderToken++;
     } catch (err) {
       pdfStore.setError('Failed to load PDF: ' + err.message);
     }
   }
 
   $effect(() => {
-    if (pdfDoc && store.currentPage > 0 && store.currentPage !== currentRenderedPage) {
-      renderCurrentPage();
+    // Track dependencies explicitly
+    const page = store.currentPage;
+    const zoom = store.zoom;
+    const pages = store.pages;
+    const doc = pdfDoc;
+    const canvas = canvasEl;
+    const _token = renderToken;
+
+    if (doc && canvas && page > 0) {
+      doRender(doc, page, zoom, pages, canvas);
     }
   });
 
-  $effect(() => {
-    if (pdfDoc && store.zoom) {
-      renderCurrentPage();
-    }
-  });
-
-  async function renderCurrentPage() {
-    if (!pdfDoc || !canvasEl) return;
-
+  async function doRender(doc, pageNum, zoom, pages, canvas) {
     // Save current fabric state before switching pages
-    if (fabricCanvas && currentRenderedPage > 0) {
-      const json = serializeCanvas(fabricCanvas);
-      pdfStore.updatePageFabric(currentRenderedPage - 1, json);
+    if (fabricCanvas && currentRenderedPage > 0 && currentRenderedPage !== pageNum) {
+      try {
+        const json = serializeCanvas(fabricCanvas);
+        pdfStore.updatePageFabric(currentRenderedPage - 1, json);
+      } catch { /* ignore serialization errors during page switch */ }
     }
 
-    const pageNum = store.currentPage;
-    const pageInfo = store.pages[pageNum - 1];
+    const pageInfo = pages[pageNum - 1];
     if (!pageInfo || pageInfo.deleted) return;
 
     const rotation = pageInfo.rotation || 0;
     const actualPageNum = pageInfo.isBlank ? -1 : pageInfo.pageNum;
 
-    if (actualPageNum > 0 && actualPageNum <= pdfDoc.numPages) {
-      const dims = await renderPage(pdfDoc, actualPageNum, canvasEl, store.zoom * 1.5, rotation);
-      pageWidth = dims.width;
-      pageHeight = dims.height;
+    let w = 0, h = 0;
+
+    if (actualPageNum > 0 && actualPageNum <= doc.numPages) {
+      const dims = await renderPage(doc, actualPageNum, canvas, zoom * 1.5, rotation);
+      w = dims.width;
+      h = dims.height;
     } else if (pageInfo.isBlank) {
-      const w = (pageInfo.blankWidth || 595) * store.zoom * 1.5;
-      const h = (pageInfo.blankHeight || 842) * store.zoom * 1.5;
-      canvasEl.width = w;
-      canvasEl.height = h;
-      const ctx = canvasEl.getContext('2d');
+      w = (pageInfo.blankWidth || 595) * zoom * 1.5;
+      h = (pageInfo.blankHeight || 842) * zoom * 1.5;
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, w, h);
-      pageWidth = w;
-      pageHeight = h;
     }
 
+    pageWidth = w;
+    pageHeight = h;
     currentRenderedPage = pageNum;
 
     // Setup fabric canvas overlay
-    if (fabricCanvasEl) {
+    if (fabricCanvasEl && w > 0 && h > 0) {
       if (fabricCanvas) {
-        fabricCanvas.dispose();
+        try { fabricCanvas.dispose(); } catch { /* ok */ }
       }
-      fabricCanvas = createFabricCanvas(fabricCanvasEl, pageWidth, pageHeight);
+      fabricCanvas = createFabricCanvas(fabricCanvasEl, w, h);
 
       // Restore saved fabric state
       if (pageInfo.fabricJson) {
@@ -127,35 +136,36 @@
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
 
-    const pointer = fabricCanvas.getViewportPoint(e);
+    // Get pointer position relative to canvas
+    const rect = fabricCanvasEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
     switch (tools.activeTool) {
       case 'text-add':
         addTextBox(fabricCanvas, {
-          x: pointer.x,
-          y: pointer.y,
+          x, y,
           ...tools.textSettings,
         });
         break;
 
       case 'highlight':
-        addHighlight(fabricCanvas, pointer.x, pointer.y, 150, 20, tools.highlightColor);
+        addHighlight(fabricCanvas, x, y, 150, 20, tools.highlightColor);
         break;
 
       case 'shapes':
         addShape(fabricCanvas, tools.shapeSettings.type, {
-          x: pointer.x,
-          y: pointer.y,
+          x, y,
           ...tools.shapeSettings,
         });
         break;
 
       case 'note':
-        addStickyNote(fabricCanvas, pointer.x, pointer.y);
+        addStickyNote(fabricCanvas, x, y);
         break;
 
       case 'stamp':
-        addStamp(fabricCanvas, tools.stampType, pointer.x, pointer.y);
+        addStamp(fabricCanvas, tools.stampType, x, y);
         break;
 
       case 'eraser':
@@ -180,8 +190,10 @@
 
   export function saveFabricState() {
     if (fabricCanvas && currentRenderedPage > 0) {
-      const json = serializeCanvas(fabricCanvas);
-      pdfStore.updatePageFabric(currentRenderedPage - 1, json);
+      try {
+        const json = serializeCanvas(fabricCanvas);
+        pdfStore.updatePageFabric(currentRenderedPage - 1, json);
+      } catch { /* ignore */ }
     }
   }
 </script>

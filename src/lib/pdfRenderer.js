@@ -13,7 +13,11 @@ function initWorker() {
 
 export async function loadPdfDocument(data) {
   initWorker();
-  const loadingTask = pdfjsLib.getDocument({ data });
+  // Always copy the ArrayBuffer so PDF.js worker transfer doesn't detach the original
+  const copy = data instanceof Uint8Array
+    ? new Uint8Array(data).buffer
+    : new Uint8Array(data).buffer;
+  const loadingTask = pdfjsLib.getDocument({ data: copy });
   return await loadingTask.promise;
 }
 
