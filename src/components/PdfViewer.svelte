@@ -2,11 +2,12 @@
   import { tick } from 'svelte';
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
-  import { loadPdfDocument, renderPage } from '../lib/pdfRenderer.js';
+  import { loadPdfDocument, renderPage, getPageTextContent } from '../lib/pdfRenderer.js';
   import {
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
-    serializeCanvas, deserializeCanvas, clearCanvas
+    serializeCanvas, deserializeCanvas, clearCanvas,
+    addPdfTextLayer
   } from '../lib/fabricManager.js';
 
   let store = $derived($pdfStore);
@@ -106,16 +107,30 @@
     if (ver !== renderVer) return;
 
     setupFabricOverlay(w, h, pageInfo);
+
+    // Load text layer for click-to-edit (only if no saved state)
+    if (!pageInfo.fabricJson && actualPageNum > 0 && pdfDoc && fabricCanvas) {
+      try {
+        const textItems = await getPageTextContent(pdfDoc, actualPageNum, zoom * 1.5, rotation);
+        if (ver !== renderVer) return;
+        addPdfTextLayer(fabricCanvas, textItems);
+      } catch (err) {
+        console.warn('Text layer error:', err.message);
+      }
+    }
   }
 
   function setupFabricOverlay(w, h, pageInfo) {
     if (!fabricCanvasEl || w <= 0 || h <= 0) return;
 
     if (!fabricCanvas) {
-      // First time: create Fabric canvas
       fabricCanvas = createFabricCanvas(fabricCanvasEl, w, h);
     } else {
-      // Subsequent: clear and resize (avoid dispose/recreate which corrupts DOM)
+      // Remove old event listeners before clearing
+      fabricCanvas.off('text:editing:entered');
+      fabricCanvas.off('text:editing:exited');
+      fabricCanvas.off('selection:created');
+      fabricCanvas.off('selection:cleared');
       fabricCanvas.clear();
       fabricCanvas.setDimensions({ width: w, height: h });
     }
@@ -154,6 +169,10 @@
 
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
+
+    // Don't add new objects when clicking on an existing Fabric object
+    const activeObj = fabricCanvas.getActiveObject();
+    if (activeObj) return;
 
     const rect = fabricCanvasEl.getBoundingClientRect();
     const x = e.clientX - rect.left;

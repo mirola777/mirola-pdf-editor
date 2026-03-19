@@ -82,23 +82,26 @@ export async function renderThumbnail(pdfDoc, pageNum, canvas, maxWidth = 150) {
   return { width: viewport.width, height: viewport.height };
 }
 
-export async function getPageTextContent(pdfDoc, pageNum) {
+export async function getPageTextContent(pdfDoc, pageNum, scale = 1, rotation = 0) {
   const page = await pdfDoc.getPage(pageNum);
   const textContent = await page.getTextContent();
-  const viewport = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale, rotation });
 
-  return textContent.items.map(item => {
-    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-    return {
-      text: item.str,
-      x: tx[4],
-      y: tx[5],
-      width: item.width,
-      height: item.height,
-      fontName: item.fontName,
-      fontSize: Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]),
-    };
-  });
+  return textContent.items
+    .filter(item => item.str && item.str.trim().length > 0)
+    .map(item => {
+      const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+      const fontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+      return {
+        text: item.str,
+        x: tx[4],
+        y: tx[5],
+        width: item.width * scale,
+        height: item.height * scale,
+        fontName: item.fontName,
+        fontSize,
+      };
+    });
 }
 
 export async function extractAllText(pdfDoc) {
