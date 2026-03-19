@@ -27,6 +27,8 @@ const DEFAULTS = {
   sidebarOpen: true,
   thumbnailsOpen: true,
   sidebarSection: 'tools',
+  // Track selected text object formatting (null when no text selected)
+  selectedText: null,
 };
 
 function createToolStore() {
@@ -71,6 +73,21 @@ function createToolStore() {
 
     setSidebarSection(section) {
       update(s => ({ ...s, sidebarSection: section }));
+    },
+
+    setSelectedText(props) {
+      update(s => ({ ...s, selectedText: props }));
+    },
+
+    updateSelectedText(partial) {
+      update(s => ({
+        ...s,
+        selectedText: s.selectedText ? { ...s.selectedText, ...partial } : null,
+      }));
+    },
+
+    clearSelectedText() {
+      update(s => ({ ...s, selectedText: null }));
     },
 
     reset() {

@@ -126,14 +126,19 @@
     if (!fabricCanvas) {
       fabricCanvas = createFabricCanvas(fabricCanvasEl, w, h);
     } else {
-      // Remove old event listeners before clearing
-      fabricCanvas.off('text:editing:entered');
-      fabricCanvas.off('text:editing:exited');
       fabricCanvas.off('selection:created');
+      fabricCanvas.off('selection:updated');
       fabricCanvas.off('selection:cleared');
+      fabricCanvas.off('object:modified');
       fabricCanvas.clear();
       fabricCanvas.setDimensions({ width: w, height: h });
     }
+
+    // Selection events → sync formatting to store
+    fabricCanvas.on('selection:created', handleFabricSelection);
+    fabricCanvas.on('selection:updated', handleFabricSelection);
+    fabricCanvas.on('selection:cleared', () => toolStore.clearSelectedText());
+    fabricCanvas.on('object:modified', handleFabricSelection);
 
     // Restore saved annotations for this page
     if (pageInfo.fabricJson) {
@@ -143,12 +148,50 @@
     setupFabricTool();
   }
 
+  function handleFabricSelection() {
+    if (!fabricCanvas) return;
+    const obj = fabricCanvas.getActiveObject();
+    if (obj && (obj.type === 'i-text' || obj.type === 'textbox')) {
+      toolStore.setSelectedText({
+        fontSize: Math.round(obj.fontSize),
+        fontFamily: obj.fontFamily,
+        color: obj.fill || '#000000',
+        bold: obj.fontWeight === 'bold',
+        italic: obj.fontStyle === 'italic',
+        underline: !!obj.underline,
+      });
+    } else {
+      toolStore.clearSelectedText();
+    }
+  }
+
   // React to tool changes
   $effect(() => {
     const tool = tools.activeTool;
     if (fabricCanvas && tool) {
       setupFabricTool();
     }
+  });
+
+  // Apply text formatting changes from store to selected Fabric object
+  $effect(() => {
+    const sel = tools.selectedText;
+    if (!sel || !fabricCanvas) return;
+    const obj = fabricCanvas.getActiveObject();
+    if (!obj || (obj.type !== 'i-text' && obj.type !== 'textbox')) return;
+
+    // Only apply if values actually differ (prevent infinite loop)
+    let changed = false;
+    if (obj.fontSize !== sel.fontSize) { obj.set('fontSize', sel.fontSize); changed = true; }
+    if (obj.fontFamily !== sel.fontFamily) { obj.set('fontFamily', sel.fontFamily); changed = true; }
+    if (obj.fill !== sel.color) { obj.set('fill', sel.color); changed = true; }
+    const newWeight = sel.bold ? 'bold' : 'normal';
+    if (obj.fontWeight !== newWeight) { obj.set('fontWeight', newWeight); changed = true; }
+    const newStyle = sel.italic ? 'italic' : 'normal';
+    if (obj.fontStyle !== newStyle) { obj.set('fontStyle', newStyle); changed = true; }
+    if (!!obj.underline !== sel.underline) { obj.set('underline', sel.underline); changed = true; }
+
+    if (changed) fabricCanvas.renderAll();
   });
 
   function setupFabricTool() {

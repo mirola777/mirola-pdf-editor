@@ -257,6 +257,8 @@ export function addPdfTextLayer(fabricCanvas, textItems) {
 
     const { fontFamily, fontWeight, fontStyle } = parsePdfFont(item.fontName);
 
+    // Opaque text that sits on top of the PDF rendering.
+    // Matches original appearance so the user sees editable text.
     const textObj = new IText(item.text, {
       left: item.x,
       top: item.y - item.fontSize * 0.82,
@@ -264,11 +266,11 @@ export function addPdfTextLayer(fabricCanvas, textItems) {
       fontFamily,
       fontWeight,
       fontStyle,
-      fill: 'rgba(0,0,0,0)',
+      fill: '#000000',
       editable: true,
       selectable: true,
       hoverCursor: 'text',
-      padding: 0,
+      padding: 1,
       borderColor: '#3b82f6',
       cornerColor: '#3b82f6',
       cornerSize: 6,
@@ -277,70 +279,6 @@ export function addPdfTextLayer(fabricCanvas, textItems) {
     });
 
     fabricCanvas.add(textObj);
-  });
-
-  // When user starts editing a pdf-text object, make it visible (opaque)
-  // and cover original PDF text with a white background rect
-  fabricCanvas.on('text:editing:entered', (e) => {
-    const obj = e.target;
-    if (obj?.customType === 'pdf-text') {
-      // Add white background behind the text to cover original PDF text
-      if (!obj._bgRect) {
-        const bgRect = new Rect({
-          left: obj.left - 2,
-          top: obj.top - 2,
-          width: obj.width + 4,
-          height: obj.height + 4,
-          fill: '#ffffff',
-          selectable: false,
-          evented: false,
-          customType: 'pdf-text-bg',
-        });
-        fabricCanvas.add(bgRect);
-        fabricCanvas.moveTo(bgRect, fabricCanvas.getObjects().indexOf(obj));
-        obj._bgRect = bgRect;
-      }
-      obj.set({ fill: '#000000' });
-      fabricCanvas.renderAll();
-    }
-  });
-
-  // When editing ends, keep the text visible (it's been modified)
-  fabricCanvas.on('text:editing:exited', (e) => {
-    const obj = e.target;
-    if (obj?.customType === 'pdf-text') {
-      obj.set({ fill: '#000000' });
-      // Resize background rect to match edited text
-      if (obj._bgRect) {
-        obj._bgRect.set({
-          left: obj.left - 2,
-          top: obj.top - 2,
-          width: obj.width + 4,
-          height: obj.height + 4,
-        });
-      }
-      fabricCanvas.renderAll();
-    }
-  });
-
-  // When selecting a pdf-text, show it
-  fabricCanvas.on('selection:created', (e) => {
-    e.selected?.forEach(obj => {
-      if (obj?.customType === 'pdf-text' && obj.fill === 'rgba(0,0,0,0)') {
-        obj.set({ fill: 'rgba(0,0,0,0.6)' });
-      }
-    });
-    fabricCanvas.renderAll();
-  });
-
-  // When deselecting, hide unedited text again
-  fabricCanvas.on('selection:cleared', () => {
-    fabricCanvas.getObjects().forEach(obj => {
-      if (obj?.customType === 'pdf-text' && !obj._bgRect && obj.fill !== '#000000') {
-        obj.set({ fill: 'rgba(0,0,0,0)' });
-      }
-    });
-    fabricCanvas.renderAll();
   });
 
   fabricCanvas.renderAll();

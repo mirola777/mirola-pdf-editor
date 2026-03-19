@@ -25,6 +25,11 @@
     { id: 'eraser', icon: 'eraser', key: 'toolEraser' },
   ];
 
+  const fontFamilies = [
+    'Helvetica', 'Arial', 'Times New Roman', 'Courier New',
+    'Georgia', 'Verdana', 'Trebuchet MS', 'Impact',
+  ];
+
   function getToolIcon(icon) {
     const icons = {
       cursor: '<path d="M4 4l7 18 3-7 7-3z"/>',
@@ -48,7 +53,7 @@
     <button
       class="btn-icon"
       class:disabled={!history.canUndo}
-      onclick={() => { const action = historyStore.undo(); }}
+      onclick={() => { historyStore.undo(); }}
       title={tr('undo') + ' (Ctrl+Z)'}
       disabled={!history.canUndo}
     >
@@ -57,7 +62,7 @@
     <button
       class="btn-icon"
       class:disabled={!history.canRedo}
-      onclick={() => { const action = historyStore.redo(); }}
+      onclick={() => { historyStore.redo(); }}
       title={tr('redo') + ' (Ctrl+Y)'}
       disabled={!history.canRedo}
     >
@@ -83,6 +88,69 @@
   </div>
 
   <div class="toolbar-divider"></div>
+
+  <!-- Text Format Bar: appears when text is selected -->
+  {#if tools.selectedText}
+    <div class="toolbar-group text-format-bar">
+      <select
+        class="format-select"
+        value={tools.selectedText.fontFamily}
+        onchange={(e) => toolStore.updateSelectedText({ fontFamily: e.target.value })}
+        title={tr('fontFamily')}
+      >
+        {#each fontFamilies as font}
+          <option value={font}>{font}</option>
+        {/each}
+      </select>
+
+      <input
+        class="format-size"
+        type="number"
+        min="6"
+        max="200"
+        value={tools.selectedText.fontSize}
+        onchange={(e) => toolStore.updateSelectedText({ fontSize: +e.target.value })}
+        title={tr('fontSize')}
+      />
+
+      <input
+        class="format-color"
+        type="color"
+        value={tools.selectedText.color}
+        oninput={(e) => toolStore.updateSelectedText({ color: e.target.value })}
+        title={tr('fontColor')}
+      />
+
+      <button
+        class="btn-icon btn-format"
+        class:active={tools.selectedText.bold}
+        onclick={() => toolStore.updateSelectedText({ bold: !tools.selectedText.bold })}
+        title={tr('bold')}
+      >
+        <strong>B</strong>
+      </button>
+
+      <button
+        class="btn-icon btn-format"
+        class:active={tools.selectedText.italic}
+        onclick={() => toolStore.updateSelectedText({ italic: !tools.selectedText.italic })}
+        title={tr('italic')}
+      >
+        <em>I</em>
+      </button>
+
+      <button
+        class="btn-icon btn-format"
+        class:active={tools.selectedText.underline}
+        onclick={() => toolStore.updateSelectedText({ underline: !tools.selectedText.underline })}
+        title={tr('underline')}
+      >
+        <u>U</u>
+      </button>
+    </div>
+
+    <div class="toolbar-divider"></div>
+  {/if}
 
   <div class="toolbar-group">
     <button class="btn-icon" onclick={() => pdfStore.setZoom(store.zoom - 0.1)} title={tr('zoomOut')} disabled={!store.fileName}>
@@ -196,8 +264,70 @@
     cursor: not-allowed;
   }
 
+  /* Text Format Bar */
+  .text-format-bar {
+    gap: 4px;
+    padding: 2px 4px;
+    background: var(--accent-light);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent);
+  }
+
+  .format-select {
+    height: 28px;
+    font-size: 11px;
+    padding: 0 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    max-width: 120px;
+  }
+
+  .format-size {
+    width: 48px;
+    height: 28px;
+    font-size: 12px;
+    padding: 0 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    text-align: center;
+    font-family: var(--font-mono);
+  }
+  .format-size::-webkit-inner-spin-button { opacity: 0.5; }
+
+  .format-color {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    background: none;
+  }
+  .format-color::-webkit-color-swatch-wrapper { padding: 2px; }
+  .format-color::-webkit-color-swatch { border-radius: 3px; border: none; }
+
+  .btn-format {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-format.active {
+    background: var(--accent);
+    color: white;
+  }
+
   @media (max-width: 768px) {
     .toolbar { height: 40px; padding: 0 8px; }
     .toolbar-divider { margin: 0 3px; }
+    .text-format-bar { display: none; }
   }
 </style>
