@@ -5,40 +5,57 @@
 
   let store = $derived($pdfStore);
   let tr = $derived($t);
-  let pdfDoc = $state(null);
   let thumbnails = $state([]);
   let dragIndex = $state(-1);
   let dropIndex = $state(-1);
 
+  // Version counter to cancel stale thumbnail loads
+  let thumbVersion = 0;
+
   $effect(() => {
     if (store.pdfBytes) {
-      loadThumbnails(store.pdfBytes);
+      loadThumbnails(store.pdfBytes, store.pages);
     } else {
       thumbnails = [];
     }
   });
 
-  async function loadThumbnails(bytes) {
+  async function loadThumbnails(bytes, pages) {
+    const myVersion = ++thumbVersion;
     try {
-      pdfDoc = await loadPdfDocument(bytes);
+      const pdfDoc = await loadPdfDocument(bytes);
+      // Bail if superseded
+      if (myVersion !== thumbVersion) return;
+
       const thumbs = [];
-      for (let i = 0; i < store.pages.length; i++) {
-        const page = store.pages[i];
+      for (let i = 0; i < pages.length; i++) {
+        // Bail if superseded
+        if (myVersion !== thumbVersion) return;
+
+        const page = pages[i];
         if (page.isBlank) {
           thumbs.push({ pageNum: i + 1, dataUrl: null, isBlank: true, deleted: page.deleted });
         } else if (page.pageNum <= pdfDoc.numPages) {
           const canvas = document.createElement('canvas');
-          await renderThumbnail(pdfDoc, page.pageNum, canvas, 120);
-          thumbs.push({
-            pageNum: i + 1,
-            dataUrl: canvas.toDataURL(),
-            isBlank: false,
-            deleted: page.deleted,
-          });
+          try {
+            await renderThumbnail(pdfDoc, page.pageNum, canvas, 120);
+            thumbs.push({
+              pageNum: i + 1,
+              dataUrl: canvas.toDataURL(),
+              isBlank: false,
+              deleted: page.deleted,
+            });
+          } catch (err) {
+            console.warn('Thumbnail render error for page', i + 1, err.message);
+            thumbs.push({ pageNum: i + 1, dataUrl: null, isBlank: false, deleted: page.deleted });
+          }
         }
       }
+      // Final bail check
+      if (myVersion !== thumbVersion) return;
       thumbnails = thumbs;
     } catch (err) {
+      if (myVersion !== thumbVersion) return;
       console.error('Failed to load thumbnails:', err);
     }
   }
@@ -61,8 +78,6 @@
     e.preventDefault();
     if (dragIndex >= 0 && dragIndex !== idx) {
       pdfStore.reorderPages(dragIndex, idx);
-      // reload thumbnails
-      setTimeout(() => loadThumbnails(store.pdfBytes), 100);
     }
     dragIndex = -1;
     dropIndex = -1;

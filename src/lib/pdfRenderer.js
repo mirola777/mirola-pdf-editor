@@ -11,17 +11,25 @@ function initWorker() {
   workerInitialized = true;
 }
 
+// Track active render tasks per canvas to prevent concurrent renders
+const activeRenderTasks = new WeakMap();
+
 export async function loadPdfDocument(data) {
   initWorker();
   // Always copy the ArrayBuffer so PDF.js worker transfer doesn't detach the original
-  const copy = data instanceof Uint8Array
-    ? new Uint8Array(data).buffer
-    : new Uint8Array(data).buffer;
+  const copy = new Uint8Array(data).buffer;
   const loadingTask = pdfjsLib.getDocument({ data: copy });
   return await loadingTask.promise;
 }
 
 export async function renderPage(pdfDoc, pageNum, canvas, scale = 1.5, rotation = 0) {
+  // Cancel any in-progress render on this canvas
+  const prevTask = activeRenderTasks.get(canvas);
+  if (prevTask) {
+    try { prevTask.cancel(); } catch { /* already done */ }
+    activeRenderTasks.delete(canvas);
+  }
+
   const page = await pdfDoc.getPage(pageNum);
   const viewport = page.getViewport({ scale, rotation });
 
@@ -31,10 +39,27 @@ export async function renderPage(pdfDoc, pageNum, canvas, scale = 1.5, rotation 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  await page.render({
+  const renderTask = page.render({
     canvasContext: ctx,
     viewport,
-  }).promise;
+  });
+
+  activeRenderTasks.set(canvas, renderTask);
+
+  try {
+    await renderTask.promise;
+  } catch (err) {
+    // RenderingCancelledException is expected when we cancel a previous render
+    if (err?.name === 'RenderingCancelledException') {
+      return null;
+    }
+    throw err;
+  } finally {
+    // Only clear if this is still the active task
+    if (activeRenderTasks.get(canvas) === renderTask) {
+      activeRenderTasks.delete(canvas);
+    }
+  }
 
   return { width: viewport.width, height: viewport.height };
 }

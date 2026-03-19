@@ -1,7 +1,7 @@
 <script>
   import { pdfStore } from '../stores/pdfStore.js';
   import { toolStore } from '../stores/toolStore.js';
-  import { loadPdfDocument, renderPage, getPageTextContent } from '../lib/pdfRenderer.js';
+  import { loadPdfDocument, renderPage } from '../lib/pdfRenderer.js';
   import {
     createFabricCanvas, setDrawingMode, addTextBox, addHighlight,
     addShape, addStickyNote, addStamp, deleteSelected,
@@ -20,8 +20,12 @@
   let pageWidth = $state(0);
   let pageHeight = $state(0);
   let lastBytesId = $state(0);
-  let renderToken = $state(0);
 
+  // Version counter to cancel stale async renders
+  let renderVersion = 0;
+  let loadVersion = 0;
+
+  // Load PDF document when bytes change
   $effect(() => {
     const bytes = store.pdfBytes;
     if (bytes) {
@@ -34,23 +38,26 @@
   });
 
   async function loadDocument(bytes) {
+    const myVersion = ++loadVersion;
     try {
-      pdfDoc = await loadPdfDocument(bytes);
+      const doc = await loadPdfDocument(bytes);
+      // Bail if a newer load started while we were loading
+      if (myVersion !== loadVersion) return;
+      pdfDoc = doc;
       currentRenderedPage = 0;
-      renderToken++;
     } catch (err) {
+      if (myVersion !== loadVersion) return;
       pdfStore.setError('Failed to load PDF: ' + err.message);
     }
   }
 
+  // Render current page when dependencies change
   $effect(() => {
-    // Track dependencies explicitly
     const page = store.currentPage;
     const zoom = store.zoom;
     const pages = store.pages;
     const doc = pdfDoc;
     const canvas = canvasEl;
-    const _token = renderToken;
 
     if (doc && canvas && page > 0) {
       doRender(doc, page, zoom, pages, canvas);
@@ -58,6 +65,8 @@
   });
 
   async function doRender(doc, pageNum, zoom, pages, canvas) {
+    const myVersion = ++renderVersion;
+
     // Save current fabric state before switching pages
     if (fabricCanvas && currentRenderedPage > 0 && currentRenderedPage !== pageNum) {
       try {
@@ -74,19 +83,31 @@
 
     let w = 0, h = 0;
 
-    if (actualPageNum > 0 && actualPageNum <= doc.numPages) {
-      const dims = await renderPage(doc, actualPageNum, canvas, zoom * 1.5, rotation);
-      w = dims.width;
-      h = dims.height;
-    } else if (pageInfo.isBlank) {
-      w = (pageInfo.blankWidth || 595) * zoom * 1.5;
-      h = (pageInfo.blankHeight || 842) * zoom * 1.5;
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
+    try {
+      if (actualPageNum > 0 && actualPageNum <= doc.numPages) {
+        const dims = await renderPage(doc, actualPageNum, canvas, zoom * 1.5, rotation);
+        // renderPage returns null if cancelled
+        if (!dims) return;
+        // Bail if a newer render started
+        if (myVersion !== renderVersion) return;
+        w = dims.width;
+        h = dims.height;
+      } else if (pageInfo.isBlank) {
+        w = (pageInfo.blankWidth || 595) * zoom * 1.5;
+        h = (pageInfo.blankHeight || 842) * zoom * 1.5;
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+      }
+    } catch (err) {
+      console.warn('Render error (will retry on next trigger):', err.message);
+      return;
     }
+
+    // Final bail check after all async work
+    if (myVersion !== renderVersion) return;
 
     pageWidth = w;
     pageHeight = h;
@@ -117,7 +138,6 @@
   function setupFabricTool() {
     if (!fabricCanvas) return;
 
-    // Reset drawing mode
     setDrawingMode(fabricCanvas, false);
     fabricCanvas.selection = true;
 
@@ -136,7 +156,6 @@
   function handleCanvasClick(e) {
     if (!fabricCanvas) return;
 
-    // Get pointer position relative to canvas
     const rect = fabricCanvasEl.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
